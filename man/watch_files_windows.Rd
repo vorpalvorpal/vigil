@@ -11,7 +11,7 @@ watch_files_windows(config)
 \describe{
 \item{id}{Unique identifier for the watcher}
 \item{path}{Directory path to watch}
-\item{pattern}{Optional file pattern to match (e.g. "*.csv")}
+\item{pattern}{Optional regex pattern to match}
 \item{recursive}{Whether to watch subdirectories}
 \item{watch_mode}{"continuous" or "single" for event handling}
 \item{change_type}{Type of changes to watch for}
@@ -23,17 +23,6 @@ Invisibly returns NULL
 }
 \description{
 Creates and manages a file system watcher on Windows using VBScript and FileSystemWatcher.
-}
-\examples{
-\dontrun{
-config <- list(
-  id = "test123",
-  path = "~/Documents",
-  pattern = "*.txt",
-  recursive = TRUE
-)
-watch_files_windows(config)
-}
 }
 \seealso{
 \code{\link{watch_files_unix}} for Unix implementation

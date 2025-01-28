@@ -15,4 +15,9 @@ Character string containing VBScript code
 \description{
 Create Windows watcher VBScript
 }
+\details{
+The pattern matching uses VBScript's regex engine which has limited support
+compared to R's regex. Some features (lookaround, Unicode classes) are removed
+or simplified.
+}
 \keyword{internal}

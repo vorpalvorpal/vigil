@@ -8,9 +8,35 @@
 \description{
 Provides a unified interface for file system watching across Windows and Unix-like
 systems. Supports pattern matching, custom callbacks, and persistent watchers.
+
+Platform-specific requirements:
+\itemize{
+\item Windows: taskscheduleR package (only for persistent watchers)
+\item Linux: inotify-tools
+\item macOS: fswatch
+}
+}
+\section{Platform-Specific Features}{
+
+Different platforms use different mechanisms for file watching:
+\itemize{
+\item Windows uses FileSystemWatcher through VBScript, and Task Scheduler (via taskscheduleR)
+for persistent watchers
+\item Linux uses inotify-tools for file watching and systemd for persistent watchers
+\item macOS uses fswatch for file watching and launchd for persistent watchers
+}
+}
+
+\seealso{
+Useful links:
+\itemize{
+  \item \url{https://github.com/vorpalvorpal/vigil}
+  \item Report bugs at \url{https://github.com/vorpalvorpal/vigil/issues}
+}
+
 }
 \author{
-\strong{Maintainer}: Robin Shannon
+\strong{Maintainer}: Robin Shannon \email{vorpalvorpal@users.noreply.github.com}
 
 }
 \keyword{internal}

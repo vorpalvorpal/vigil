@@ -20,12 +20,3 @@ tibble with columns:
 \description{
 Returns information about all currently active file watchers.
 }
-\examples{
-\dontrun{
-# List all watchers
-list_watchers()
-
-# Check for persistent watchers
-subset(list_watchers(), persistent)
-}
-}

@@ -15,4 +15,12 @@ Character string containing shell script code
 \description{
 Create Unix watcher shell script
 }
+\details{
+The pattern matching uses Extended Regular Expressions (ERE) which is compatible
+with R's regex syntax. The pattern is passed to either inotifywait or fswatch
+using their respective --regexp flags.
+
+For inotifywait (Linux), see: https://linux.die.net/man/1/inotifywait
+For fswatch (macOS), see: https://emcrisostomo.github.io/fswatch/doc/
+}
 \keyword{internal}

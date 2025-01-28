@@ -9,7 +9,7 @@ watch_until(path, pattern = NULL, change_type = "any", timeout = NULL)
 \arguments{
 \item{path}{Directory path to watch}
 
-\item{pattern}{Optional file pattern to match (e.g. "*.csv")}
+\item{pattern}{Optional file pattern to match (regex)}
 
 \item{change_type}{Type of change to watch for: "created", "modified",
 "deleted", or "any" (default: "any")}
@@ -29,16 +29,4 @@ Returns NULL if timeout is reached before any changes
 \description{
 Sets up a temporary file watcher that runs until specified changes occur or
 timeout is reached.
-}
-\examples{
-\dontrun{
-# Wait for any change
-watch_until("~/Documents")
-
-# Wait for new CSV file (10 second timeout)
-watch_until("~/Data",
-           pattern = "*.csv",
-           change_type = "created",
-           timeout = 10)
-}
 }

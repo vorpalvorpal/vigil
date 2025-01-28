@@ -17,7 +17,7 @@
 #' * Linux uses inotify-tools for file watching and systemd for persistent watchers
 #' * macOS uses fswatch for file watching and launchd for persistent watchers
 #'
-#' @importFrom fs path_norm dir_create file_exists path path_ext chmod path_expand
+#' @importFrom fs path_norm dir_create file_exists path path_ext file_chmod path_expand
 #' @importFrom jsonlite write_json read_json
 #' @importFrom cli cli_alert_info cli_alert_warning cli_abort cli_alert_success
 #' @importFrom uuid UUIDgenerate

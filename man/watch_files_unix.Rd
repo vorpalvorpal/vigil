@@ -19,17 +19,6 @@ or fswatch.
 \note{
 Requires either inotify-tools (Linux) or fswatch (macOS) to be installed
 }
-\examples{
-\dontrun{
-config <- list(
-  id = "test123",
-  path = "~/Documents",
-  pattern = "*.txt",
-  recursive = TRUE
-)
-watch_files_unix(config)
-}
-}
 \seealso{
 \code{\link{watch_files_windows}} for Windows implementation
 }

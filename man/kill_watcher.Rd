@@ -4,23 +4,16 @@
 \alias{kill_watcher}
 \title{Kill a file watcher}
 \usage{
-kill_watcher(id)
+kill_watcher(id, timeout = 10)
 }
 \arguments{
 \item{id}{Watcher ID to kill}
+
+\item{timeout}{Timeout in seconds for kill operation}
 }
 \value{
 Invisibly returns TRUE if successful, FALSE otherwise
 }
 \description{
 Stops a specific file watcher and cleans up associated resources.
-}
-\examples{
-\dontrun{
-# Start a watcher
-id <- watch("~/Documents")
-
-# Later, kill it
-kill_watcher(id)
-}
 }

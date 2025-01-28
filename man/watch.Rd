@@ -9,13 +9,14 @@ watch(
   pattern = NULL,
   recursive = FALSE,
   callback = NULL,
-  persistent = FALSE
+  watch_mode = "continuous",
+  change_type = "any"
 )
 }
 \arguments{
 \item{path}{Directory path to watch}
 
-\item{pattern}{Optional file pattern to match (e.g. "*.csv")}
+\item{pattern}{Optional file pattern to match as regular expression}
 
 \item{recursive}{Whether to watch subdirectories (default: FALSE)}
 
@@ -26,32 +27,24 @@ watch(
 \item Path to an R script
 }}
 
-\item{persistent}{Whether to create a persistent watcher that survives R session
-restarts (default: FALSE)}
+\item{watch_mode}{The watching mode (default: "continuous")
+\itemize{
+\item "continuous" - Watch continuously until explicitly stopped
+\item "single" - Stop after first event
+\item "persistent" - Continue watching even after R session ends
+}}
+
+\item{change_type}{Type of changes to watch for (default: "any")
+\itemize{
+\item "any" - All changes
+\item "created" - File creation only
+\item "modified" - File modification only
+\item "deleted" - File deletion only
+}}
 }
 \value{
 Invisibly returns the watcher ID (character string)
 }
 \description{
 Sets up a file system watcher to monitor changes in a specified directory.
-}
-\examples{
-\dontrun{
-# Watch for all changes
-watch("~/Documents")
-
-# Watch CSV files only
-watch("~/Data", pattern = "*.csv")
-
-# Watch with callback
-watch("~/Downloads", callback = function(event) {
-  message("File changed: ", event$path)
-})
-
-# Watch with package function
-watch("~/Data", callback = "dplyr::glimpse")
-
-# Persistent watcher
-watch("~/important", persistent = TRUE)
-}
 }
