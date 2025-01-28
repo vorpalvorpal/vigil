@@ -3,20 +3,24 @@ library(vigil)
 
 # Environment Setup Helpers -----------------------------------------------
 
-#' Create temporary test environment
-#' @return List containing directory path and cleanup function
-setup_test_env <- function() {
+# Helper function to create test directory structure
+setup_watch_env <- function() {
   tmp_dir <- file.path(tempdir(), paste0("vigil-test-", uuid::UUIDgenerate()))
   fs::dir_create(tmp_dir)
+
+  # Create subdirectories for recursive tests
   fs::dir_create(file.path(tmp_dir, "subdir"))
 
+  # Return paths
   list(
-    dir = tmp_dir,
-    subdir = file.path(tmp_dir, "subdir"),
-    cleanup = function() {
-      unlink(tmp_dir, recursive = TRUE)
-    }
+    root = tmp_dir,
+    subdir = file.path(tmp_dir, "subdir")
   )
+}
+
+# Helper to cleanup test environment
+cleanup_watch_env <- function(env) {
+  unlink(env$root, recursive = TRUE)
 }
 
 #' Create test files with various patterns

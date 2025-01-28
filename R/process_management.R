@@ -55,13 +55,16 @@ get_vigil_dir <- function() {
 #' @param max_age Maximum age in days before cleanup
 #' @keywords internal
 cleanup_old_files <- function(dir, max_age = 7) {
+  # Get all files and filter by extensions we care about
+  files <- fs::dir_ls(dir)
+  files <- files[grep("\\.(json|txt|vbs|sh)$", files)]
+
+  if (length(files) == 0) {
+    return(invisible())
+  }
+
   # Find files older than max_age days
-  old_files <- fs::dir_ls(
-    dir,
-    glob = c("*.json", "*.txt", "*.vbs", "*.sh"),
-    recurse = FALSE
-  ) |>
-    fs::file_info() |>
+  old_files <- fs::file_info(files) |>
     dplyr::filter(
       modification_time < (Sys.time() - max_age * 24 * 60 * 60)
     )
