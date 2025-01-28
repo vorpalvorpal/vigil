@@ -2,7 +2,7 @@ Package: vigil
 Title: Cross-Platform File System Watching for R
 Version: 0.1.0
 Authors@R: 
-    person("Robin", "Shannon", email = "first.last@example.com", role = c("aut", "cre"))
+    person("Robin", "Shannon", email = "vorpalvorpal@users.noreply.github.com", role = c("aut", "cre"))
 Description: Provides a unified interface for file system watching across Windows 
     and Unix-like systems. Supports pattern matching, custom callbacks, and 
     persistent watchers.
