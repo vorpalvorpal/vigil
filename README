@@ -1,0 +1,31 @@
+## Platform-Specific Requirements
+
+The vigil package has different requirements depending on your operating system:
+
+### Windows
+- Basic file watching: No additional requirements
+- Persistent watchers: Requires the `taskscheduleR` package
+  ```r
+  install.packages("taskscheduleR")
+  ```
+
+### Linux
+- Requires inotify-tools:
+  ```bash
+  # Ubuntu/Debian
+  sudo apt-get install inotify-tools
+
+  # Fedora
+  sudo dnf install inotify-tools
+
+  # Arch Linux
+  sudo pacman -S inotify-tools
+  ```
+
+### macOS
+- Requires fswatch:
+  ```bash
+  brew install fswatch
+  ```
+
+The package will automatically check for these requirements and provide helpful error messages if anything is missing.

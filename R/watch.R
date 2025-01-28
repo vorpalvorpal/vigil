@@ -32,6 +32,15 @@ watch <- function(path,
                   callback = NULL,
                   watch_mode = "continuous",
                   change_type = "any") {
+
+  # Check platform requirements
+  check_platform_requirements()
+
+  # If persistent mode, check additional requirements
+  if (watch_mode == "persistent") {
+    check_persistent_requirements()
+  }
+
   # Validate inputs
   checkmate::assert_directory_exists(path)
   if (!is.null(pattern)) {

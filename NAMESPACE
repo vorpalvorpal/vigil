@@ -52,11 +52,6 @@ importFrom(sys,
            exec_wait,
            exec_background)
 
-importFrom(taskscheduleR,
-           taskscheduler_create,
-           taskscheduler_delete,
-           taskscheduler_ls)
-
 importFrom(tibble,
            tibble)
 

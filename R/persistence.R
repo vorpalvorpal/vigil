@@ -8,6 +8,14 @@ verify_persistent_windows <- function(config) {
   checkmate::assert_list(config)
   checkmate::assert_string(config$id)
 
+  # Check if taskscheduleR is available
+  if (!requireNamespace("taskscheduleR", quietly = TRUE)) {
+    cli::cli_abort(c(
+      "taskscheduleR package is required for persistent watchers on Windows",
+      "i" = "Install taskscheduleR with: install.packages('taskscheduleR')"
+    ))
+  }
+
   # Task name uses the watcher ID for uniqueness
   task_name <- sprintf("vigil_watcher_%s", config$id)
 
@@ -36,6 +44,14 @@ verify_persistent_windows <- function(config) {
 register_persistent_windows <- function(config) {
   checkmate::assert_list(config)
   checkmate::assert_string(config$id)
+
+  # Check if taskscheduleR is available
+  if (!requireNamespace("taskscheduleR", quietly = TRUE)) {
+    cli::cli_abort(c(
+      "taskscheduleR package is required for persistent watchers on Windows",
+      "i" = "Install taskscheduleR with: install.packages('taskscheduleR')"
+    ))
+  }
 
   # Create a VBScript watcher as before
   script <- create_windows_watcher_script(config)
@@ -75,6 +91,14 @@ register_persistent_windows <- function(config) {
 unregister_persistent_windows <- function(config) {
   checkmate::assert_list(config)
   checkmate::assert_string(config$id)
+
+  # Check if taskscheduleR is available
+  if (!requireNamespace("taskscheduleR", quietly = TRUE)) {
+    cli::cli_abort(c(
+      "taskscheduleR package is required for persistent watchers on Windows",
+      "i" = "Install taskscheduleR with: install.packages('taskscheduleR')"
+    ))
+  }
 
   task_name <- sprintf("vigil_watcher_%s", config$id)
 
