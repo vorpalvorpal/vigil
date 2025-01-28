@@ -1,0 +1,81 @@
+#!/bin/bash
+
+# Configuration
+WATCH_MODE="{{WATCH_MODE}}"    # "continuous", "single" or "persistent"
+CHANGE_TYPE="{{CHANGE_TYPE}}"  # "any", "created", "modified", "deleted"
+NO_CLEANUP="{{NO_CLEANUP}}"    # "true" or "false"
+
+# Write process ID file
+echo "$$ {{WATCHER_ID}}" > "{{VIGIL_DIR}}/process_{{WATCHER_ID}}.txt"
+
+# Cleanup function
+cleanup() {
+    rm -f "{{VIGIL_DIR}}/process_{{WATCHER_ID}}.txt"
+    if [ "$NO_CLEANUP" != "true" ]; then
+        rm -f "{{VIGIL_DIR}}/event_{{WATCHER_ID}}_*.json"
+    fi
+    exit 0
+}
+
+# Set up signal handling
+trap cleanup SIGTERM SIGINT
+
+# Function to write event data and handle exit conditions
+write_event() {
+    local type=$1
+    local file=$2
+
+    # Only process events that match our criteria
+    if [ "$CHANGE_TYPE" != "any" ] && [ "$CHANGE_TYPE" != "$type" ]; then
+        return
+    fi
+
+    local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local event_file="{{VIGIL_DIR}}/event_{{WATCHER_ID}}_$(date +%Y%m%d%H%M%S).json"
+
+    echo "{\"type\":\"$type\",\"path\":\"$file\",\"timestamp\":\"$timestamp\"}" > "$event_file"
+
+    # If in single event mode, exit after processing
+    if [ "$WATCH_MODE" = "single" ]; then
+        cleanup
+    fi
+}
+
+if command -v inotifywait >/dev/null 2>&1; then
+    # Use inotify
+    inotifywait -m {{RECURSIVE}} "{{WATCH_PATH}}" -e create -e modify -e delete --format '%w%f:%e' |
+    while read file_event; do
+        # For non-persistent mode, check if parent exists
+        if [ "$WATCH_MODE" != "persistent" ]; then
+            if ! kill -0 $$ 2>/dev/null; then
+                cleanup
+            fi
+        fi
+
+        file="${file_event%%:*}"
+        event="${file_event##*:}"
+
+        case "$event" in
+            CREATE) write_event "created" "$file" ;;
+            MODIFY) write_event "modified" "$file" ;;
+            DELETE) write_event "deleted" "$file" ;;
+            *) continue ;;
+        esac
+    done
+elif command -v fswatch >/dev/null 2>&1; then
+    # Use fswatch
+    fswatch {{RECURSIVE}} "{{WATCH_PATH}}" | while read file; do
+        # For non-persistent mode, check if parent exists
+        if [ "$WATCH_MODE" != "persistent" ]; then
+            if ! kill -0 $$ 2>/dev/null; then
+                cleanup
+            fi
+        fi
+
+        write_event "modified" "$file"
+    done
+else
+    echo "No file watching tool found (need inotifywait or fswatch)" >&2
+    cleanup
+    exit 1
+fi

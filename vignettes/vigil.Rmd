@@ -1,0 +1,302 @@
+---
+title: "Getting Started with vigil"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting Started with vigil}
+%\VignetteEngine{knitr::rmarkdown}
+%\VignetteEncoding{UTF-8}
+---
+
+  ```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+# Introduction to vigil
+
+The vigil package provides a unified interface for file system watching across Windows and Unix-like systems. It allows you to monitor directories for file changes and react to those changes through callbacks or event collection.
+
+## System Requirements
+
+### Windows
+No additional software required. Uses built-in FileSystemWatcher.
+
+### Linux
+Requires inotify-tools:
+  ```bash
+# Ubuntu/Debian
+sudo apt-get install inotify-tools
+
+# Fedora
+sudo dnf install inotify-tools
+
+# Arch Linux
+sudo pacman -S inotify-tools
+```
+
+### macOS
+Requires fswatch:
+  ```bash
+brew install fswatch
+```
+
+## Basic Usage
+
+### Watching a Directory
+
+The simplest way to watch a directory is using the `watch()` function:
+
+  ```r
+library(vigil)
+
+# Watch a directory
+watch("~/Documents")
+
+# Check active watchers
+list_watchers()
+
+# Stop watching
+kill_all_watchers()
+```
+
+### Filtering Files
+
+You can watch specific file types using patterns:
+
+  ```r
+# Watch only CSV files
+watch("~/Data", pattern = "*.csv")
+
+# Watch multiple extensions
+watch("~/Scripts", pattern = "*.{R,Rmd}")
+```
+
+### Recursive Watching
+
+Monitor subdirectories by setting `recursive = TRUE`:
+
+  ```r
+# Watch entire directory tree
+watch("~/Project", recursive = TRUE)
+```
+
+## Working with Callbacks
+
+### Function Callbacks
+
+```r
+# Simple message callback
+watch("~/Downloads", callback = function(event) {
+  message("File ", event$name, " was ", event$change_type)
+})
+
+# Process new CSV files
+watch("~/Data",
+      pattern = "*.csv",
+      callback = function(event) {
+        if (event$change_type == "created") {
+          data <- read.csv(event$path)
+          # Process data...
+        }
+      })
+```
+
+### Package Function Callbacks
+
+You can use functions from other packages:
+
+  ```r
+# View new data files
+watch("~/Data",
+      pattern = "*.csv",
+      callback = "utils::View")
+
+# Analyze new data
+watch("~/Experiments",
+      pattern = "*.csv",
+      callback = "dplyr::glimpse")
+```
+
+### Script Callbacks
+
+Create a script file (e.g., `process_file.R`):
+  ```r
+# event parameter is available in script
+message("Processing ", event$path)
+data <- read.csv(event$path)
+# Process data...
+```
+
+Use the script as callback:
+  ```r
+watch("~/Data",
+      pattern = "*.csv",
+      callback = "~/scripts/process_file.R")
+```
+
+## Persistent Watchers
+
+Persistent watchers continue running even after the R session ends:
+
+  ```r
+# Create persistent watcher
+watch("~/important",
+      pattern = "*.csv",
+      callback = "~/scripts/process.R",
+      persistent = TRUE)
+
+# List persistent watchers
+subset(list_watchers(), persistent)
+```
+
+## Waiting for Changes
+
+The `watch_until()` function waits for specific changes:
+
+  ```r
+# Wait for new file
+result <- watch_until("~/Downloads",
+                      change_type = "created",
+                      timeout = 60)
+
+if (!is.null(result)) {
+  message("New file: ", result$name)
+}
+
+# Wait for modification
+result <- watch_until("~/Data/dataset.csv",
+                      change_type = "modified")
+```
+
+## Best Practices
+
+1. Clean Up Resources
+```r
+# Store watcher IDs
+id <- watch("~/Documents")
+
+# Clean up when done
+kill_watcher(id)
+# or
+kill_all_watchers()
+```
+
+2. Error Handling
+```r
+# Check if watcher creation succeeded
+tryCatch({
+  id <- watch("~/Data")
+}, error = function(e) {
+  message("Failed to create watcher: ", e$message)
+})
+```
+
+3. Resource Management
+```r
+# Limit recursive watching to avoid performance issues
+watch("~/huge_directory",
+      recursive = TRUE,
+      pattern = "*.csv")  # Filter to necessary files
+```
+
+4. Callback Safety
+```r
+watch("~/Data",
+      callback = function(event) {
+        tryCatch({
+          # Process file
+        }, error = function(e) {
+          message("Error processing ", event$path, ": ", e$message)
+        })
+      })
+```
+
+## Common Issues
+
+### Windows
+
+1. Path Length Limits
+```r
+# Use normalized paths
+watch(fs::path_norm("C:/Very/Long/Path/..."))
+```
+
+2. File Locking
+```r
+# Handle locked files in callback
+callback = function(event) {
+  Sys.sleep(1)  # Brief delay
+  tryCatch({
+    # Process file
+  }, error = function(e) {
+    if (grepl("locked", e$message)) {
+      # Retry later
+    }
+  })
+}
+```
+
+### Unix
+
+1. Inotify Limits
+```bash
+# Increase inotify limits if needed
+echo fs.inotify.max_user_watches=524288 | sudo tee -a /etc/sysctl.conf
+sudo sysctl -p
+```
+
+2. Permissions
+```r
+# Ensure watch directory is readable
+watch("~/Data", callback = function(event) {
+  if (!file.access(event$path, mode = 4) == 0) {
+    warning("Cannot read ", event$path)
+    return()
+  }
+  # Process file
+})
+```
+
+## Advanced Usage
+
+### Custom Event Filtering
+
+```r
+# Watch specific change types
+watch("~/Data", callback = function(event) {
+  switch(event$change_type,
+         created = {
+           # Handle new files
+         },
+         modified = {
+           # Handle modifications
+         },
+         deleted = {
+           # Handle deletions
+         })
+})
+```
+
+### Combining with Other Packages
+
+```r
+library(future)
+library(purrr)
+
+# Async processing of file changes
+watch("~/Data",
+      callback = function(event) {
+        future({
+          # Process file asynchronously
+          data <- read.csv(event$path)
+          results <- compute_statistics(data)
+          save_results(results)
+        })
+      })
+```
+
+## Conclusion
+
+The vigil package provides a robust foundation for file system monitoring in R. Its cross-platform support and flexible callback system make it suitable for a wide range of applications, from simple file watching to complex data processing pipelines.

@@ -1,0 +1,136 @@
+' watch-files.vbs.template
+'
+' Template for Windows file system watching using System.IO.FileSystemWatcher
+'
+' Configuration Variables:
+' {{WATCH_MODE}}    - Watching mode: "continuous", "single", or "persistent"
+' {{CHANGE_TYPE}}   - Type of changes to monitor: "any", "created", "modified", "deleted"
+' {{NO_CLEANUP}}    - Whether to preserve event files: "true" or "false"
+' {{WATCHER_ID}}    - Unique identifier for this watcher instance
+' {{VIGIL_DIR}}     - Directory for vigil files
+' {{WATCH_PATH}}    - Directory to monitor
+' {{PATTERN}}       - File pattern to match (e.g., "*.csv")
+' {{RECURSIVE}}     - "True" or "False" for recursive watching
+
+Option Explicit
+
+' Configuration
+Const WATCH_MODE = "{{WATCH_MODE}}"     ' Watching mode
+Const CHANGE_TYPE = "{{CHANGE_TYPE}}"    ' Type of changes to monitor
+Const NO_CLEANUP = "{{NO_CLEANUP}}"      ' Preserve event files
+
+' Create required objects
+Dim objFSO, objShell, watchFolder
+Set objFSO = CreateObject("Scripting.FileSystemObject")
+Set objShell = WScript.CreateObject("WScript.Shell")
+
+' Write process ID file for tracking
+With CreateObject("ADODB.Stream")
+    .Open
+    .Type = 2 ' Text mode
+    .Charset = "utf-8"
+    ' Get current process ID and write to tracking file
+    .WriteText WScript.GetObject("winmgmts:").Get("Win32_Process.Handle='" & _
+               CreateObject("WScript.Shell").Exec("cmd /c echo %%" & "pid%%").StdOut.ReadAll & "'").ProcessId & _
+               " {{WATCHER_ID}}"
+    .SaveToFile "{{VIGIL_DIR}}\process_{{WATCHER_ID}}.txt", 2
+    .Close
+End With
+
+' Cleanup subroutine - removes process and event files
+Sub Cleanup(exitScript)
+    On Error Resume Next
+    Dim processFile
+    processFile = "{{VIGIL_DIR}}\process_{{WATCHER_ID}}.txt"
+
+    ' Remove process tracking file
+    If objFSO.FileExists(processFile) Then objFSO.DeleteFile(processFile)
+
+    ' Clean up event files if configured
+    If NO_CLEANUP <> "true" Then
+        Dim eventFile
+        For Each eventFile in objFSO.GetFolder("{{VIGIL_DIR}}").Files
+            If Left(eventFile.Name, 6) = "event_" And _
+               InStr(eventFile.Name, "{{WATCHER_ID}}") > 0 Then
+                objFSO.DeleteFile eventFile.Path
+            End If
+        Next
+    End If
+
+    If exitScript Then WScript.Quit
+End Sub
+
+' Register cleanup on script termination
+Sub OnTerminate
+    Cleanup True
+End Sub
+
+' Handle file events (created/modified/deleted)
+Sub HandleFileEvent(eventType, file)
+    On Error Resume Next
+
+    ' Only process events matching configured type
+    If CHANGE_TYPE <> "any" And eventType <> CHANGE_TYPE Then
+        Exit Sub
+    End If
+
+    ' Write event details to JSON file
+    Dim eventFile
+    eventFile = "{{VIGIL_DIR}}\event_{{WATCHER_ID}}_" & Replace(Now, ":", "") & ".json"
+
+    With CreateObject("ADODB.Stream")
+        .Open
+        .Type = 2 ' Text mode
+        .Charset = "utf-8"
+        .WriteText "{""type"":""" & eventType & """,""path"":""" & _
+                   Replace(file, "\", "\\") & """,""timestamp"":""" & Now & """}"
+        .SaveToFile eventFile, 2
+        .Close
+    End With
+
+    ' Exit after first event in single event mode
+    If WATCH_MODE = "single" Then
+        Cleanup True
+    End If
+End Sub
+
+' Event handlers for different file changes
+Sub OnCreated(obj, ev)
+    HandleFileEvent "created", ev.FullPath
+End Sub
+
+Sub OnChanged(obj, ev)
+    HandleFileEvent "modified", ev.FullPath
+End Sub
+
+Sub OnDeleted(obj, ev)
+    HandleFileEvent "deleted", ev.FullPath
+End Sub
+
+' Set up and configure FileSystemWatcher
+Set watchFolder = CreateObject("System.IO.FileSystemWatcher")
+With watchFolder
+    .Path = "{{WATCH_PATH}}"
+    .Filter = "{{PATTERN}}"
+    .NotifyFilter = 17 ' LastWrite + FileName + DirectoryName
+    .IncludeSubdirectories = {{RECURSIVE}}
+    .EnableRaisingEvents = True
+End With
+
+' Connect event handlers
+watchFolder.OnCreated = GetRef("OnCreated")
+watchFolder.OnChanged = GetRef("OnChanged")
+watchFolder.OnDeleted = GetRef("OnDeleted")
+
+' Main loop
+Do While True
+    WScript.Sleep 1000
+
+    ' Check parent process except in persistent mode
+    If WATCH_MODE <> "persistent" Then
+        On Error Resume Next
+        If WScript.StdIn.AtEndOfStream Then
+            Cleanup True
+        End If
+    End If
+Loop

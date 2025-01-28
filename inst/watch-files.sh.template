@@ -1,0 +1,103 @@
+#!/bin/bash
+#
+# watch-files.sh.template
+#
+# Template for Unix-like systems file watching using inotifywait or fswatch
+#
+# Configuration Variables:
+# {{WATCH_MODE}}    - "continuous", "single" or "persistent"
+# {{CHANGE_TYPE}}   - "any", "created", "modified", "deleted"
+# {{NO_CLEANUP}}    - "true" or "false" for event file preservation
+# {{WATCHER_ID}}    - Unique identifier for this watcher
+# {{VIGIL_DIR}}     - Directory for vigil files
+# {{WATCH_PATH}}    - Directory to monitor
+# {{RECURSIVE}}     - "-r" for recursive, empty for non-recursive
+
+# Configuration
+WATCH_MODE="{{WATCH_MODE}}"
+CHANGE_TYPE="{{CHANGE_TYPE}}"
+NO_CLEANUP="{{NO_CLEANUP}}"
+
+# Write process ID file for tracking
+echo "$$ {{WATCHER_ID}}" > "{{VIGIL_DIR}}/process_{{WATCHER_ID}}.txt"
+
+# Cleanup function
+cleanup() {
+    # Remove process tracking file
+    rm -f "{{VIGIL_DIR}}/process_{{WATCHER_ID}}.txt"
+
+    # Clean up event files if configured
+    if [ "$NO_CLEANUP" != "true" ]; then
+        rm -f "{{VIGIL_DIR}}/event_{{WATCHER_ID}}_*.json"
+    fi
+    exit 0
+}
+
+# Set up signal handling for clean exit
+trap cleanup SIGTERM SIGINT
+
+# Function to write event data and handle single event mode
+write_event() {
+    local type=$1
+    local file=$2
+
+    # Only process events matching configured type
+    if [ "$CHANGE_TYPE" != "any" ] && [ "$CHANGE_TYPE" != "$type" ]; then
+        return
+    fi
+
+    # Create event file with timestamp
+    local timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    local event_file="{{VIGIL_DIR}}/event_{{WATCHER_ID}}_$(date +%Y%m%d%H%M%S).json"
+
+    echo "{\"type\":\"$type\",\"path\":\"$file\",\"timestamp\":\"$timestamp\"}" > "$event_file"
+
+    # Exit after first event in single event mode
+    if [ "$WATCH_MODE" = "single" ]; then
+        cleanup
+    fi
+}
+
+# Determine which watching tool to use
+if command -v inotifywait >/dev/null 2>&1; then
+    # Use inotifywait (Linux)
+    inotifywait -m {{RECURSIVE}} "{{WATCH_PATH}}" -e create -e modify -e delete \
+        --format '%w%f:%e' | while read file_event; do
+
+        # Check parent process in non-persistent mode
+        if [ "$WATCH_MODE" != "persistent" ]; then
+            if ! kill -0 $$ 2>/dev/null; then
+                cleanup
+            fi
+        fi
+
+        # Parse and handle event
+        file="${file_event%%:*}"
+        event="${file_event##*:}"
+
+        case "$event" in
+            CREATE) write_event "created" "$file" ;;
+            MODIFY) write_event "modified" "$file" ;;
+            DELETE) write_event "deleted" "$file" ;;
+            *) continue ;;
+        esac
+    done
+elif command -v fswatch >/dev/null 2>&1; then
+    # Use fswatch (macOS)
+    fswatch {{RECURSIVE}} "{{WATCH_PATH}}" | while read file; do
+        # Check parent process in non-persistent mode
+        if [ "$WATCH_MODE" != "persistent" ]; then
+            if ! kill -0 $$ 2>/dev/null; then
+                cleanup
+            fi
+        fi
+
+        # fswatch doesn't distinguish event types, treat as modification
+        write_event "modified" "$file"
+    done
+else
+    # No suitable watching tool found
+    echo "No file watching tool found (requires inotifywait or fswatch)" >&2
+    cleanup
+    exit 1
+fi
