@@ -6,7 +6,7 @@
 #'   \describe{
 #'     \item{id}{Unique identifier for the watcher}
 #'     \item{path}{Directory path to watch}
-#'     \item{pattern}{Optional file pattern to match (e.g. "*.csv")}
+#'     \item{pattern}{Optional regex pattern to match}
 #'     \item{recursive}{Whether to watch subdirectories}
 #'     \item{watch_mode}{"continuous" or "single" for event handling}
 #'     \item{change_type}{Type of changes to watch for}
@@ -14,16 +14,6 @@
 #'   }
 #' @return Invisibly returns NULL
 #' @seealso \code{\link{watch_files_unix}} for Unix implementation
-#' @examples
-#' \dontrun{
-#' config <- list(
-#'   id = "test123",
-#'   path = "~/Documents",
-#'   pattern = "*.txt",
-#'   recursive = TRUE
-#' )
-#' watch_files_windows(config)
-#' }
 #' @keywords internal
 watch_files_windows <- function(config) {
   # Create VBScript for FileSystemWatcher
@@ -63,16 +53,6 @@ watch_files_windows <- function(config) {
 #' @return Invisibly returns NULL
 #' @note Requires either inotify-tools (Linux) or fswatch (macOS) to be installed
 #' @seealso \code{\link{watch_files_windows}} for Windows implementation
-#' @examples
-#' \dontrun{
-#' config <- list(
-#'   id = "test123",
-#'   path = "~/Documents",
-#'   pattern = "*.txt",
-#'   recursive = TRUE
-#' )
-#' watch_files_unix(config)
-#' }
 #' @keywords internal
 watch_files_unix <- function(config) {
   # Check for required tools
@@ -122,9 +102,70 @@ watch_files_unix <- function(config) {
   })
 }
 
+#' Convert R regex to VBScript compatible pattern
+#'
+#' @param pattern Character string containing R regular expression
+#' @return Character string containing VBScript compatible regular expression
+#' @note VBScript has limited regex support. Some R regex features may be removed
+#'       or simplified.
+#' @keywords internal
+convert_regex_to_vbs <- function(pattern) {
+  checkmate::assert_character(pattern, len = 1, null.ok = TRUE)
+
+  if (is.null(pattern)) {
+    return(".*")  # Default pattern
+  }
+
+  # Verify input is a valid R regex
+  tryCatch(
+    grepl(pattern, "test string"),
+    error = function(e) cli::cli_abort("Invalid regular expression pattern")
+  )
+
+  # VBScript specific transformations
+  vbs_pattern <- pattern |>
+    # Convert shorthand character classes
+    gsub("\\\\d", "[0-9]", x = _) |>
+    gsub("\\\\w", "[A-Za-z0-9_]", x = _) |>
+    gsub("\\\\s", "[ \\t\\n\\r]", x = _) |>
+    # Remove unsupported lookarounds
+    gsub("\\(\\?=[^)]*\\)", "", x = _) |>
+    gsub("\\(\\?<=[^)]*\\)", "", x = _) |>
+    gsub("\\(\\?![^)]*\\)", "", x = _) |>
+    gsub("\\(\\?<![^)]*\\)", "", x = _) |>
+    # Convert named groups to regular groups
+    gsub("\\(\\?<[^>]+>", "(", x = _)
+
+  if (grepl("\\P{\\w+}|\\p{\\w+}", vbs_pattern)) {
+    cli::cli_abort("Unicode character classes are not supported in VBScript regex")
+  }
+
+  vbs_pattern
+}
+
+#' Escape pattern for shell commands
+#'
+#' @param pattern Character string containing regex pattern
+#' @return Character string with shell metacharacters escaped
+#' @keywords internal
+escape_shell_pattern <- function(pattern) {
+  checkmate::assert_character(pattern, len = 1, null.ok = TRUE)
+
+  if (is.null(pattern)) {
+    return(NULL)
+  }
+
+  # Escape single quotes for shell safety (replace ' with '\''')
+  gsub("'", "'\\''", pattern, fixed = TRUE)
+}
+
 #' Create Windows watcher VBScript
 #' @param config Watcher configuration
 #' @return Character string containing VBScript code
+#' @details
+#' The pattern matching uses VBScript's regex engine which has limited support
+#' compared to R's regex. Some features (lookaround, Unicode classes) are removed
+#' or simplified.
 #' @keywords internal
 create_windows_watcher_script <- function(config) {
   # Read template
@@ -144,16 +185,7 @@ create_windows_watcher_script <- function(config) {
   watch_path <- fs::path_abs(config$path)
 
   # Convert R regex to VBScript regex pattern if provided
-  vbs_pattern <- if (!is.null(config$pattern)) {
-    # VBScript uses slightly different regex syntax
-    pattern <- config$pattern
-    pattern <- sub("\\\\d", "[0-9]", pattern)  # \d not supported in VBScript
-    pattern <- sub("\\\\w", "[A-Za-z0-9_]", pattern)  # \w not supported
-    pattern <- sub("\\\\s", "[ \\t\\n\\r]", pattern)  # \s not supported
-    pattern
-  } else {
-    ".*"  # Match everything if no pattern provided
-  }
+  vbs_pattern <- convert_regex_to_vbs(config$pattern)
 
   # Replace template variables
   script <- paste(template, collapse = "\n")
@@ -172,6 +204,13 @@ create_windows_watcher_script <- function(config) {
 #' Create Unix watcher shell script
 #' @param config Watcher configuration
 #' @return Character string containing shell script code
+#' @details
+#' The pattern matching uses Extended Regular Expressions (ERE) which is compatible
+#' with R's regex syntax. The pattern is passed to either inotifywait or fswatch
+#' using their respective --regexp flags.
+#'
+#' For inotifywait (Linux), see: https://linux.die.net/man/1/inotifywait
+#' For fswatch (macOS), see: https://emcrisostomo.github.io/fswatch/doc/
 #' @keywords internal
 create_unix_watcher_script <- function(config) {
   # Read template
@@ -203,16 +242,17 @@ create_unix_watcher_script <- function(config) {
   recursive_flag <- if(config$recursive) "-r" else ""
   script <- gsub("{{RECURSIVE}}", recursive_flag, script, fixed = TRUE)
 
-  # Handle pattern for inotifywait/fswatch
+  # Handle pattern for inotifywait/fswatch with proper escaping
   if (!is.null(config$pattern)) {
+    safe_pattern <- escape_shell_pattern(config$pattern)
     script <- gsub(
       "inotifywait -m",
-      sprintf("inotifywait -m --regexp '%s'", config$pattern),
+      sprintf("inotifywait -m --regexp '%s'", safe_pattern),
       script
     )
     script <- gsub(
       "fswatch",
-      sprintf("fswatch --regexp '%s'", config$pattern),
+      sprintf("fswatch --regexp '%s'", safe_pattern),
       script
     )
   }
