@@ -9,14 +9,101 @@
 #' On Unix-like systems, files are stored in ~/.local/share/R/vigil
 #' @keywords internal
 get_vigil_dir <- function() {
+  # Determine base directory
   if (.Platform$OS.type == "windows") {
-    base <- Sys.getenv("LOCALAPPDATA")
+    base <- Sys.getenv("LOCALAPPDATA", unset = NA)
+    if (is.na(base)) {
+      cli::cli_abort(c(
+        "Could not determine AppData directory",
+        "i" = "LOCALAPPDATA environment variable not set"
+      ))
+    }
   } else {
     base <- "~/.local/share"
   }
+
+  # Create path
   path <- fs::path(base, "R", "vigil")
-  fs::dir_create(path)
+
+  # Try to create directory with error handling
+  tryCatch({
+    fs::dir_create(path)
+  }, error = function(e) {
+    cli::cli_abort(c(
+      "Could not create vigil directory",
+      "x" = e$message,
+      "i" = "Check if you have write permissions"
+    ))
+  })
+
+  # Verify directory is writable
+  if (!fs::file_access(path, mode = "write")) {
+    cli::cli_abort(c(
+      "Vigil directory is not writable",
+      "i" = "Check permissions for {.path {path}}"
+    ))
+  }
+
+  # Clean up old files
+  cleanup_old_files(path)
+
   fs::path_norm(path)
+}
+
+#' Clean up old vigil files
+#' @param dir Directory to clean
+#' @param max_age Maximum age in days before cleanup
+#' @keywords internal
+cleanup_old_files <- function(dir, max_age = 7) {
+  # Find files older than max_age days
+  old_files <- fs::dir_ls(
+    dir,
+    glob = c("*.json", "*.txt", "*.vbs", "*.sh"),
+    recurse = FALSE
+  ) |>
+    fs::file_info() |>
+    dplyr::filter(
+      modification_time < (Sys.time() - max_age * 24 * 60 * 60)
+    )
+
+  if (nrow(old_files) > 0) {
+    # Try to clean up each file
+    purrr::walk(old_files$path, function(file) {
+      tryCatch({
+        # Check if file belongs to active watcher
+        if (!is_active_watcher_file(file)) {
+          fs::file_delete(file)
+        }
+      }, error = function(e) {
+        cli::cli_warn(c(
+          "Could not delete old file",
+          "!" = "File: {.path {file}}",
+          "x" = e$message
+        ))
+      })
+    })
+  }
+}
+
+#' Check if file belongs to active watcher
+#' @param file File path to check
+#' @return Boolean indicating if file belongs to active watcher
+#' @keywords internal
+is_active_watcher_file <- function(file) {
+  # Extract watcher ID from filename
+  id <- stringr::str_extract(
+    basename(file),
+    "(?:watcher|process|event)_([^_\\.]+)",
+    group = 1
+  )
+
+  if (is.na(id)) {
+    return(FALSE)
+  }
+
+  # Check if there's an active watcher with this ID
+  watchers <- list_watchers()
+  id %in% watchers$id
 }
 
 #' Verify if a process is a vigil watcher
@@ -32,17 +119,6 @@ verify_vigil_process <- function(pid, id) {
   }
 
   config <- jsonlite::read_json(config_file)
-
-  # Handle persistent watchers differently
-  if (isTRUE(config$persistent)) {
-    if (.Platform$OS.type == "windows") {
-      return(verify_persistent_windows(config))
-    } else if (Sys.info()["sysname"] == "Darwin") {
-      return(verify_persistent_macos(config))
-    } else {
-      return(verify_persistent_linux(config))
-    }
-  }
 
   # For non-persistent watchers, check process as before
   if (.Platform$OS.type == "windows") {
@@ -60,12 +136,17 @@ verify_vigil_process <- function(pid, id) {
   }
 }
 
-#' Kill a vigil watcher process
+#' Kill a process
 #' @param pid Process ID to kill
 #' @param id Watcher ID
+#' @param timeout Timeout in seconds for kill operation
 #' @return Boolean indicating success
 #' @keywords internal
-kill_process <- function(pid, id) {
+kill_process <- function(pid, id, timeout = 10) {
+  # Validate inputs
+  checkmate::assert_string(id)
+  checkmate::assert_number(timeout, lower = 0)
+
   # Read the watcher config
   config_file <- fs::path(get_vigil_dir(), sprintf("watcher_%s.json", id))
   if (!fs::file_exists(config_file)) {
@@ -74,45 +155,106 @@ kill_process <- function(pid, id) {
 
   config <- jsonlite::read_json(config_file)
 
-  # Handle persistent watchers
+  # Handle persistent watchers differently
   if (isTRUE(config$persistent)) {
-    if (.Platform$OS.type == "windows") {
-      return(unregister_persistent_windows(config))
+    success <- if (.Platform$OS.type == "windows") {
+      unregister_persistent_windows(config)
     } else if (Sys.info()["sysname"] == "Darwin") {
-      return(unregister_persistent_macos(config))
+      unregister_persistent_macos(config)
     } else {
-      return(unregister_persistent_linux(config))
+      unregister_persistent_linux(config)
     }
+
+    if (success) {
+      # Clean up configuration files after successful unregistration
+      cleanup_watcher_files(id, force = TRUE)
+    }
+
+    return(success)
   }
 
-  # For non-persistent watchers, verify before killing
+  # For non-persistent watchers, verify process exists
+  checkmate::assert_string(pid)
   if (!verify_vigil_process(pid, id)) {
     return(FALSE)
   }
 
-  if (.Platform$OS.type == "windows") {
-    # Send terminate signal to allow cleanup
-    success <- system2("taskkill", c("/PID", pid), stdout = FALSE, stderr = FALSE) == 0
-
-    # If gentle kill failed, force kill after small delay
-    if (!success) {
-      Sys.sleep(2)
-      success <- system2("taskkill", c("/F", "/PID", pid), stdout = FALSE, stderr = FALSE) == 0
-    }
-
-    success
+  # Kill process based on platform
+  success <- if (.Platform$OS.type == "windows") {
+    kill_windows_process(pid, timeout)
   } else {
-    # Send SIGTERM to allow cleanup
-    success <- system2("kill", pid, stdout = FALSE, stderr = FALSE) == 0
+    kill_unix_process(pid, timeout)
+  }
 
-    # If gentle kill failed, force kill after small delay
-    if (!success) {
-      Sys.sleep(2)
-      success <- system2("kill", c("-9", pid), stdout = FALSE, stderr = FALSE) == 0
+  # Clean up files if kill was successful
+  if (success) {
+    cleanup_watcher_files(id)
+  }
+
+  success
+}
+
+#' Kill a Windows process
+#' @param pid Process ID to kill
+#' @param timeout Timeout in seconds
+#' @return Boolean indicating success
+#' @keywords internal
+kill_windows_process <- function(pid, timeout) {
+  start_time <- Sys.time()
+
+  # First try gentle termination
+  success <- system2("taskkill",
+                     c("/PID", pid),
+                     stdout = FALSE,
+                     stderr = FALSE) == 0
+
+  # If gentle kill failed, try force kill with remaining timeout
+  if (!success) {
+    elapsed <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
+    if (elapsed >= timeout) {
+      return(FALSE)
     }
 
-    success
+    # Wait a short time before force kill
+    Sys.sleep(min(2, timeout - elapsed))
+
+    success <- system2("taskkill",
+                       c("/F", "/PID", pid),
+                       stdout = FALSE,
+                       stderr = FALSE) == 0
   }
+
+  success
+}
+
+#' Kill a Unix process
+#' @param pid Process ID to kill
+#' @param timeout Timeout in seconds
+#' @return Boolean indicating success
+#' @keywords internal
+kill_unix_process <- function(pid, timeout) {
+  start_time <- Sys.time()
+
+  # First try SIGTERM
+  success <- system2("kill", pid, stdout = FALSE, stderr = FALSE) == 0
+
+  # If SIGTERM failed, try SIGKILL with remaining timeout
+  if (!success) {
+    elapsed <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
+    if (elapsed >= timeout) {
+      return(FALSE)
+    }
+
+    # Wait a short time before SIGKILL
+    Sys.sleep(min(2, timeout - elapsed))
+
+    success <- system2("kill",
+                       c("-9", pid),
+                       stdout = FALSE,
+                       stderr = FALSE) == 0
+  }
+
+  success
 }
 
 #' Clean up watcher files

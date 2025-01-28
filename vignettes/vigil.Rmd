@@ -3,29 +3,38 @@ title: "Getting Started with vigil"
 output: rmarkdown::html_vignette
 vignette: >
   %\VignetteIndexEntry{Getting Started with vigil}
-%\VignetteEngine{knitr::rmarkdown}
-%\VignetteEncoding{UTF-8}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
 ---
 
-  ```{r, include = FALSE}
+```{r setup, include=FALSE}
 knitr::opts_chunk$set(
   collapse = TRUE,
   comment = "#>"
 )
 ```
 
-# Introduction to vigil
+# Introduction
 
-The vigil package provides a unified interface for file system watching across Windows and Unix-like systems. It allows you to monitor directories for file changes and react to those changes through callbacks or event collection.
+The vigil package provides a robust, cross-platform solution for file system monitoring in R. It offers:
+
+- Real-time file system watching across Windows, macOS, and Linux
+- Pattern matching using regular expressions
+- Support for persistent watchers that survive R session restarts
+- Flexible callback system for event handling
+- Comprehensive error handling and resource management
 
 ## System Requirements
 
+Each platform requires specific tools for optimal file watching:
+
 ### Windows
-No additional software required. Uses built-in FileSystemWatcher.
+- No additional software required
+- Uses built-in FileSystemWatcher through VBScript
 
 ### Linux
-Requires inotify-tools:
-  ```bash
+- Requires inotify-tools:
+```bash
 # Ubuntu/Debian
 sudo apt-get install inotify-tools
 
@@ -37,64 +46,63 @@ sudo pacman -S inotify-tools
 ```
 
 ### macOS
-Requires fswatch:
-  ```bash
+- Requires fswatch:
+```bash
 brew install fswatch
 ```
 
-## Basic Usage
+# Basic Usage
 
-### Watching a Directory
+## Simple File Watching
 
-The simplest way to watch a directory is using the `watch()` function:
+The most basic way to watch a directory:
 
-  ```r
+```r
 library(vigil)
 
-# Watch a directory
-watch("~/Documents")
+# Start watching a directory
+id <- watch("~/Documents")
 
 # Check active watchers
 list_watchers()
 
 # Stop watching
-kill_all_watchers()
+kill_watcher(id)
 ```
 
-### Filtering Files
+## Pattern Matching
 
-You can watch specific file types using patterns:
+Watch specific file types using regular expressions:
 
-  ```r
+```r
 # Watch only CSV files
-watch("~/Data", pattern = "*.csv")
+watch("~/Data", pattern = "\\.csv$")
 
-# Watch multiple extensions
-watch("~/Scripts", pattern = "*.{R,Rmd}")
+# Watch multiple file types
+watch("~/Scripts", pattern = "\\.(R|Rmd)$")
 ```
 
-### Recursive Watching
+## Recursive Watching
 
-Monitor subdirectories by setting `recursive = TRUE`:
+Monitor subdirectories:
 
-  ```r
-# Watch entire directory tree
+```r
 watch("~/Project", recursive = TRUE)
 ```
 
-## Working with Callbacks
+# Callback System
 
-### Function Callbacks
+## Function Callbacks
 
 ```r
 # Simple message callback
 watch("~/Downloads", callback = function(event) {
-  message("File ", event$name, " was ", event$change_type)
+  message("File ", basename(event$path), " was ", event$change_type)
 })
 
 # Process new CSV files
 watch("~/Data",
-      pattern = "*.csv",
+      pattern = "\\.csv$",
       callback = function(event) {
         if (event$change_type == "created") {
           data <- read.csv(event$path)
@@ -103,119 +111,203 @@ watch("~/Data",
       })
 ```
 
-### Package Function Callbacks
+## Package Function Callbacks
 
-You can use functions from other packages:
+Use functions directly from other packages:
 
-  ```r
+```r
 # View new data files
 watch("~/Data",
-      pattern = "*.csv",
+      pattern = "\\.csv$",
       callback = "utils::View")
 
-# Analyze new data
+# Process with dplyr
 watch("~/Experiments",
-      pattern = "*.csv",
+      pattern = "\\.csv$",
       callback = "dplyr::glimpse")
 ```
 
-### Script Callbacks
+## Script Callbacks
 
-Create a script file (e.g., `process_file.R`):
-  ```r
-# event parameter is available in script
-message("Processing ", event$path)
+Create a callback script (`process_file.R`):
+```r
+# event contains: path, change_type, timestamp
+message("Processing ", basename(event$path))
 data <- read.csv(event$path)
 # Process data...
 ```
 
 Use the script as callback:
-  ```r
+```r
 watch("~/Data",
-      pattern = "*.csv",
+      pattern = "\\.csv$",
       callback = "~/scripts/process_file.R")
 ```
 
-## Persistent Watchers
+# Persistent Watchers
+
+## Creating Persistent Watchers
 
 Persistent watchers continue running even after the R session ends:
 
-  ```r
+```r
 # Create persistent watcher
-watch("~/important",
-      pattern = "*.csv",
-      callback = "~/scripts/process.R",
-      persistent = TRUE)
+id <- watch("~/important",
+           pattern = "\\.csv$",
+           callback = "~/scripts/process.R",
+           watch_mode = "persistent")
 
 # List persistent watchers
-subset(list_watchers(), persistent)
+dplyr::filter(list_watchers(), persistent)
+```
+
+## Managing Persistent Watchers
+
+```r
+# Kill specific watcher
+kill_watcher(id)
+
+# Kill all watchers (including persistent)
+kill_all_watchers()
+```
+
+## Platform-Specific Details
+
+### Windows
+- Uses Windows Task Scheduler
+- Runs as current user
+- Survives system restarts
+
+### Linux
+- Uses systemd user services
+- Requires no root privileges
+- Auto-restarts on failure
+
+### macOS
+- Uses launchd user agents
+- Integrates with system service management
+- Handles system sleep/wake
+
+# Advanced Features
+
+## Watch Modes
+
+```r
+# Stop after first event
+watch("~/Downloads", watch_mode = "single")
+
+# Watch continuously (default)
+watch("~/Documents", watch_mode = "continuous")
+
+# Persistent watching
+watch("~/Important", watch_mode = "persistent")
+```
+
+## Change Types
+
+```r
+# Only file creation
+watch("~/Uploads", change_type = "created")
+
+# Only modifications
+watch("~/Data", change_type = "modified")
+
+# Only deletions
+watch("~/Temp", change_type = "deleted")
+
+# All changes (default)
+watch("~/Docs", change_type = "any")
 ```
 
 ## Waiting for Changes
 
-The `watch_until()` function waits for specific changes:
-
-  ```r
-# Wait for new file
+```r
+# Wait for new file (with timeout)
 result <- watch_until("~/Downloads",
-                      change_type = "created",
-                      timeout = 60)
+                     pattern = "\\.pdf$",
+                     change_type = "created",
+                     timeout = 60)
 
 if (!is.null(result)) {
-  message("New file: ", result$name)
+  message("New PDF: ", basename(result$path))
 }
-
-# Wait for modification
-result <- watch_until("~/Data/dataset.csv",
-                      change_type = "modified")
 ```
 
-## Best Practices
+# Best Practices
 
-1. Clean Up Resources
+## Resource Management
+
+Always clean up watchers when done:
 ```r
 # Store watcher IDs
 id <- watch("~/Documents")
 
-# Clean up when done
+# Clean up when finished
 kill_watcher(id)
 # or
 kill_all_watchers()
 ```
 
-2. Error Handling
+## Error Handling
+
+Use tryCatch for robust error handling:
 ```r
-# Check if watcher creation succeeded
 tryCatch({
-  id <- watch("~/Data")
+  id <- watch("~/Data",
+              callback = function(event) {
+                data <- read.csv(event$path)
+                # Process data...
+              })
 }, error = function(e) {
-  message("Failed to create watcher: ", e$message)
+  message("Error setting up watcher: ", e$message)
 })
 ```
 
-3. Resource Management
+## Performance Considerations
+
+1. Limit recursive watching scope:
 ```r
-# Limit recursive watching to avoid performance issues
-watch("~/huge_directory",
+# Better
+watch("~/project/data",
       recursive = TRUE,
-      pattern = "*.csv")  # Filter to necessary files
+      pattern = "\\.csv$")
+
+# Avoid
+watch("~/",
+      recursive = TRUE)  # Too broad
 ```
 
-4. Callback Safety
+2. Use specific patterns:
 ```r
-watch("~/Data",
+# Better
+watch("~/data",
+      pattern = "\\d{8}_data\\.csv$")
+
+# Avoid
+watch("~/data",
+      pattern = ".*")  # Too general
+```
+
+3. Efficient callbacks:
+```r
+# Better
+watch("~/data",
       callback = function(event) {
-        tryCatch({
-          # Process file
-        }, error = function(e) {
-          message("Error processing ", event$path, ": ", e$message)
-        })
+        if (event$change_type == "created") {
+          # Only process new files
+        }
+      })
+
+# Avoid
+watch("~/data",
+      callback = function(event) {
+        # Processing everything
       })
 ```
 
-## Common Issues
+# Troubleshooting
 
-### Windows
+## Windows Issues
 
 1. Path Length Limits
 ```r
@@ -225,9 +317,9 @@ watch(fs::path_norm("C:/Very/Long/Path/..."))
 
 2. File Locking
 ```r
-# Handle locked files in callback
+# Handle locked files
 callback = function(event) {
-  Sys.sleep(1)  # Brief delay
+  Sys.sleep(0.5)  # Brief delay
   tryCatch({
     # Process file
   }, error = function(e) {
@@ -238,7 +330,7 @@ callback = function(event) {
 }
 ```
 
-### Unix
+## Unix Issues
 
 1. Inotify Limits
 ```bash
@@ -249,54 +341,125 @@ sudo sysctl -p
 
 2. Permissions
 ```r
-# Ensure watch directory is readable
-watch("~/Data", callback = function(event) {
-  if (!file.access(event$path, mode = 4) == 0) {
-    warning("Cannot read ", event$path)
-    return()
-  }
-  # Process file
-})
-```
-
-## Advanced Usage
-
-### Custom Event Filtering
-
-```r
-# Watch specific change types
-watch("~/Data", callback = function(event) {
-  switch(event$change_type,
-         created = {
-           # Handle new files
-         },
-         modified = {
-           # Handle modifications
-         },
-         deleted = {
-           # Handle deletions
-         })
-})
-```
-
-### Combining with Other Packages
-
-```r
-library(future)
-library(purrr)
-
-# Async processing of file changes
+# Check file access
 watch("~/Data",
       callback = function(event) {
-        future({
-          # Process file asynchronously
-          data <- read.csv(event$path)
-          results <- compute_statistics(data)
-          save_results(results)
+        if (!file.access(event$path, mode = 4) == 0) {
+          warning("Cannot read ", basename(event$path))
+          return()
+        }
+        # Process file
+      })
+```
+
+## Common Issues
+
+1. Callback Errors
+```r
+watch("~/Data",
+      callback = function(event) {
+        tryCatch({
+          # Process file
+        }, error = function(e) {
+          message("Error processing ", basename(event$path), ": ", e$message)
         })
       })
 ```
 
-## Conclusion
+2. Resource Leaks
+```r
+# Use withr for automatic cleanup
+withr::with_dir("~/Data", {
+  id <- watch(".")
+  # Do work...
+  kill_watcher(id)
+})
+```
 
-The vigil package provides a robust foundation for file system monitoring in R. Its cross-platform support and flexible callback system make it suitable for a wide range of applications, from simple file watching to complex data processing pipelines.
+3. Event Timing
+```r
+watch("~/Data",
+      callback = function(event) {
+        # Allow file system to settle
+        Sys.sleep(0.1)
+        if (file.exists(event$path)) {
+          # Process file
+        }
+      })
+```
+
+# Advanced Examples
+
+## Real-time Data Processing
+
+```r
+# Watch for new data files and update analysis
+watch("~/experiments/data",
+      pattern = "\\.csv$",
+      callback = function(event) {
+        if (event$change_type == "created") {
+          # Read new data
+          data <- read.csv(event$path)
+          
+          # Process data
+          results <- analyze_data(data)
+          
+          # Save results
+          output_path <- file.path(
+            "~/experiments/results",
+            sub("\\.csv$", "_results.csv", basename(event$path))
+          )
+          write.csv(results, output_path)
+          
+          # Notify
+          message("Processed ", basename(event$path))
+        }
+      })
+```
+
+## Log File Monitoring
+
+```r
+# Monitor log files and alert on errors
+watch("~/logs",
+      pattern = "\\.log$",
+      callback = function(event) {
+        if (event$change_type == "modified") {
+          # Read new lines
+          log_lines <- readLines(event$path)
+          
+          # Check for errors
+          errors <- grep("ERROR", log_lines, value = TRUE)
+          if (length(errors) > 0) {
+            message("Errors found in ", basename(event$path), ":")
+            message(paste(errors, collapse = "\n"))
+          }
+        }
+      })
+```
+
+## Automated Backup
+
+```r
+# Create backups of modified documents
+watch("~/documents",
+      pattern = "\\.(doc|docx|pdf)$",
+      recursive = TRUE,
+      callback = function(event) {
+        if (event$change_type == "modified") {
+          # Create backup path
+          backup_dir <- "~/backups"
+          backup_name <- sprintf(
+            "%s_%s%s",
+            tools::file_path_sans_ext(basename(event$path)),
+            format(Sys.time(), "%Y%m%d_%H%M%S"),
+            tools::file_ext(event$path)
+          )
+          backup_path <- file.path(backup_dir, backup_name)
+          
+          # Copy file
+          file.copy(event$path, backup_path)
+          message("Created backup: ", backup_name)
+        }
+      })
+```

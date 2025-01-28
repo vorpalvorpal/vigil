@@ -3,7 +3,7 @@
 #' Sets up a file system watcher to monitor changes in a specified directory.
 #'
 #' @param path Directory path to watch
-#' @param pattern Optional file pattern to match (e.g. "*.csv")
+#' @param pattern Optional file pattern to match as regular expression
 #' @param recursive Whether to watch subdirectories (default: FALSE)
 #' @param callback Function to call when files change. Can be:
 #'   \itemize{
@@ -27,7 +27,7 @@
 #' @return Invisibly returns the watcher ID (character string)
 #' @export
 watch <- function(path,
-                  pattern = NULL,  # Now expects a regex pattern
+                  pattern = NULL,
                   recursive = FALSE,
                   callback = NULL,
                   watch_mode = "continuous",
@@ -35,11 +35,14 @@ watch <- function(path,
   # Validate inputs
   checkmate::assert_directory_exists(path)
   if (!is.null(pattern)) {
-    checkmate::assert_character(pattern, len = 1)
+    checkmate::assert_string(pattern)
     # Verify it's a valid regex
     tryCatch(
       grepl(pattern, "test string"),
-      error = function(e) cli::cli_abort("Invalid regular expression pattern")
+      error = function(e) cli::cli_abort(c(
+        "Invalid regular expression pattern",
+        "x" = e$message
+      ))
     )
   }
   checkmate::assert_flag(recursive)
@@ -48,7 +51,9 @@ watch <- function(path,
 
   # Create unique ID for this watcher
   id <- uuid::UUIDgenerate()
-  print(id)
+
+  # Validate and process callback
+  validated_callback <- validate_callback(callback)
 
   # Create config
   config <- list(
@@ -56,57 +61,62 @@ watch <- function(path,
     path = fs::path_norm(path),
     pattern = pattern,
     recursive = recursive,
-    callback = validate_callback(callback),
-    watch_mode = watch_mode,  # Using consistent naming
+    callback = validated_callback,
+    watch_mode = watch_mode,
     change_type = change_type,
-    created = format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+    created = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+    persistent = watch_mode == "persistent"
   )
-  print(config$id)
 
   # Write config file
   config_file <- fs::path(get_vigil_dir(), sprintf("watcher_%s.json", id))
-  print(config_file)
   jsonlite::write_json(config, config_file, auto_unbox = TRUE)
 
-  if (watch_mode == "persistent") {
-    # Launch persistent watcher based on OS
-    if (.Platform$OS.type == "windows") {
-      register_persistent_windows(config)
-    } else if (Sys.info()["sysname"] == "Darwin") {
-      register_persistent_macos(config)
+  # Launch watcher based on mode and platform
+  tryCatch({
+    if (watch_mode == "persistent") {
+      if (.Platform$OS.type == "windows") {
+        register_persistent_windows(config)
+      } else if (Sys.info()["sysname"] == "Darwin") {
+        register_persistent_macos(config)
+      } else {
+        register_persistent_linux(config)
+      }
     } else {
-      register_persistent_linux(config)
+      if (.Platform$OS.type == "windows") {
+        watch_files_windows(config)
+      } else {
+        watch_files_unix(config)
+      }
     }
-  } else {
-    # Launch regular watcher based on OS
-    if (.Platform$OS.type == "windows") {
-      watch_files_windows(config)
-    } else {
-      watch_files_unix(config)
-    }
-  }
+  }, error = function(e) {
+    # Clean up on error
+    cleanup_watcher_files(id, force = TRUE)
+    cli::cli_abort(c(
+      "Failed to start watcher",
+      "x" = e$message
+    ))
+  })
 
-  # Build change type message
-  change_msg <- if (change_type == "any") {
-    "all file changes"
-  } else if (change_type == "created") {
-    "file creation"
-  } else if (change_type == "modified") {
-    "file modification"
-  } else if (change_type == "deleted") {
-    "file deletion"
-  }
+  # Build descriptive messages
+  change_msg <- switch(change_type,
+                       "any" = "all file changes",
+                       "created" = "file creation",
+                       "modified" = "file modification",
+                       "deleted" = "file deletion"
+  )
 
-  # Build duration message
   duration_msg <- switch(watch_mode,
                          "single" = "until first event",
-                         "persistent" = "until it is actively stopped or the computer is shut down",
-                         "continuous" = "until it is actively stopped"
+                         "persistent" = "until explicitly stopped",
+                         "continuous" = "until this R session ends"
   )
 
-  cli::cli_alert_success(
-    "Started watching for {change_msg} at {.path {path}}. Watcher will continue {duration_msg}."
-  )
+  cli::cli_alert_success(c(
+    "Started watching for {change_msg} at {.path {path}}.",
+    "i" = "Watcher will continue {duration_msg}."
+  ))
+
   invisible(id)
 }
 
@@ -123,14 +133,6 @@ watch <- function(path,
 #'     \item{persistent}{Whether watcher is persistent}
 #'     \item{created}{When watcher was created}
 #'   }
-#' @examples
-#' \dontrun{
-#' # List all watchers
-#' list_watchers()
-#'
-#' # Check for persistent watchers
-#' subset(list_watchers(), persistent)
-#' }
 #' @export
 list_watchers <- function() {
   # List all watcher config files
@@ -190,7 +192,7 @@ list_watchers <- function() {
     tibble::tibble(
       id = config$id,
       path = config$path,
-      pattern = if(is.null(config$pattern)) NA_character_ else config$pattern,
+      pattern = if (is.null(config$pattern)) NA_character_ else config$pattern,
       recursive = config$recursive,
       persistent = isTRUE(config$persistent),
       created = config$created
@@ -204,7 +206,7 @@ list_watchers <- function() {
 #' timeout is reached.
 #'
 #' @param path Directory path to watch
-#' @param pattern Optional file pattern to match (e.g. "*.csv")
+#' @param pattern Optional file pattern to match (regex)
 #' @param change_type Type of change to watch for: "created", "modified",
 #'   "deleted", or "any" (default: "any")
 #' @param timeout Timeout in seconds. NULL means wait indefinitely
@@ -216,25 +218,14 @@ list_watchers <- function() {
 #'     \item{timestamp}{When change occurred}
 #'   }
 #'   Returns NULL if timeout is reached before any changes
-#' @examples
-#' \dontrun{
-#' # Wait for any change
-#' watch_until("~/Documents")
-#'
-#' # Wait for new CSV file (10 second timeout)
-#' watch_until("~/Data",
-#'            pattern = "*.csv",
-#'            change_type = "created",
-#'            timeout = 10)
-#' }
 #' @export
 watch_until <- function(path,
-                        pattern = NULL,  # Now expects a regex pattern
+                        pattern = NULL,
                         change_type = "any",
                         timeout = NULL) {
   checkmate::assert_directory_exists(path)
   if (!is.null(pattern)) {
-    checkmate::assert_character(pattern, len = 1)
+    checkmate::assert_string(pattern)
     tryCatch(
       grepl(pattern, "test string"),
       error = function(e) cli::cli_abort("Invalid regular expression pattern")
@@ -254,7 +245,8 @@ watch_until <- function(path,
     recursive = FALSE,
     watch_mode = "single",
     change_type = change_type,
-    no_cleanup = "true"  # We'll handle cleanup ourselves
+    no_cleanup = "true", # We'll handle cleanup ourselves
+    persistent = FALSE
   )
 
   # Write config file
@@ -326,17 +318,13 @@ watch_until <- function(path,
 #' Stops a specific file watcher and cleans up associated resources.
 #'
 #' @param id Watcher ID to kill
+#' @param timeout Timeout in seconds for kill operation
 #' @return Invisibly returns TRUE if successful, FALSE otherwise
-#' @examples
-#' \dontrun{
-#' # Start a watcher
-#' id <- watch("~/Documents")
-#'
-#' # Later, kill it
-#' kill_watcher(id)
-#' }
 #' @export
-kill_watcher <- function(id) {
+kill_watcher <- function(id, timeout = 10) {
+  checkmate::assert_string(id)
+  checkmate::assert_number(timeout, lower = 0)
+
   process_file <- fs::path(get_vigil_dir(), sprintf("process_%s.txt", id))
 
   if (!fs::file_exists(process_file)) {
@@ -347,13 +335,7 @@ kill_watcher <- function(id) {
   process_info <- readLines(process_file)
   pid <- strsplit(process_info, " ")[[1]][1]
 
-  if (kill_process(pid, id)) {
-    # Give process time to clean up its own files
-    Sys.sleep(1)
-
-    # Clean up any remaining files
-    cleanup_watcher_files(id)
-
+  if (kill_process(pid, id, timeout)) {
     cli::cli_alert_success("Killed watcher {.val {id}}")
     invisible(TRUE)
   } else {
@@ -366,18 +348,27 @@ kill_watcher <- function(id) {
 #'
 #' Stops all active file watchers and cleans up their resources.
 #'
-#' @examples
-#' \dontrun{
-#' # Kill all watchers
-#' kill_all_watchers()
-#' }
+#' @param timeout Timeout in seconds for each kill operation
 #' @export
-kill_all_watchers <- function() {
+kill_all_watchers <- function(timeout = 10) {
+  checkmate::assert_number(timeout, lower = 0)
+
   watchers <- list_watchers()
   if (nrow(watchers) == 0) {
     cli::cli_alert_info("No active watchers found")
     return(invisible())
   }
 
-  purrr::walk(watchers$id, kill_watcher)
+  results <- purrr::map_lgl(watchers$id, ~ kill_watcher(.x, timeout))
+
+  successful <- sum(results)
+  total <- length(results)
+
+  if (successful == total) {
+    cli::cli_alert_success("Successfully killed all {total} watchers")
+  } else {
+    cli::cli_alert_warning("Killed {successful} out of {total} watchers")
+  }
+
+  invisible(results)
 }

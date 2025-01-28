@@ -1,39 +1,69 @@
-# tests/testthat/helper.R
-
 library(testthat)
 library(vigil)
 
-# Create temporary test environment
+# Environment Setup Helpers -----------------------------------------------
+
+#' Create temporary test environment
+#' @return List containing directory path and cleanup function
 setup_test_env <- function() {
   tmp_dir <- file.path(tempdir(), paste0("vigil-test-", uuid::UUIDgenerate()))
   fs::dir_create(tmp_dir)
+  fs::dir_create(file.path(tmp_dir, "subdir"))
 
   list(
     dir = tmp_dir,
+    subdir = file.path(tmp_dir, "subdir"),
     cleanup = function() {
       unlink(tmp_dir, recursive = TRUE)
     }
   )
 }
 
-# Mock process for testing
+#' Create test files with various patterns
+#' @param dir Directory to create files in
+#' @param patterns Vector of file patterns to create
+#' @return Vector of created file paths
+create_test_files <- function(dir, patterns) {
+  checkmate::assert_directory_exists(dir)
+  checkmate::assert_character(patterns, min.len = 1)
+
+  purrr::map_chr(patterns, function(pattern) {
+    ext <- sub(".*\\.", "", pattern)
+    file <- fs::path(dir, paste0("test.", ext))
+    writeLines("test", file)
+    Sys.sleep(0.1)  # Ensure file creation is registered
+    file
+  })
+}
+
+# Process Management Helpers ---------------------------------------------
+
+#' Create mock process for testing
+#' @param env Test environment
+#' @return List containing process object and cleanup function
 create_mock_process <- function(env) {
+  checkmate::assert_list(env, names = "dir")
+
+  # Create platform-specific script
   script <- if (.Platform$OS.type == "windows") {
     'while(1) { Start-Sleep -Seconds 1 }'
   } else {
     'while true; do sleep 1; done'
   }
 
-  script_path <- file.path(env$dir, "mock_process.bat")
+  script_path <- fs::path(env$dir, "mock_process.bat")
   writeLines(script, script_path)
 
   if (.Platform$OS.type != "windows") {
-    Sys.chmod(script_path, "755")
+    fs::file_chmod(script_path, "0755")
   }
 
+  # Start process
   px <- processx::process$new(
     command = if (.Platform$OS.type == "windows") "powershell" else "bash",
-    args = c(if (.Platform$OS.type == "windows") "-File" else "-c", script_path)
+    args = c(if (.Platform$OS.type == "windows") "-File" else "-c", script_path),
+    stdout = "|",
+    stderr = "|"
   )
 
   list(
@@ -45,55 +75,61 @@ create_mock_process <- function(env) {
   )
 }
 
-# Wait for condition with timeout
-wait_for <- function(condition, timeout = 5, interval = 0.1) {
-  end_time <- Sys.time() + timeout
-  while (Sys.time() < end_time) {
-    if (condition()) {
-      return(TRUE)
-    }
-    Sys.sleep(interval)
-  }
-  FALSE
-}
+#' Create mock persistent process
+#' @param config Watcher configuration
+#' @return List containing process info and cleanup function
+create_mock_persistent <- function(config) {
+  checkmate::assert_list(config, names = "id")
 
-# Skip tests on specific platforms
-skip_on_windows <- function() {
   if (.Platform$OS.type == "windows") {
-    skip("Test not run on Windows")
+    # Create Windows scheduled task
+    task_name <- sprintf("vigil_watcher_%s", config$id)
+    taskscheduleR::taskscheduler_create(
+      taskname = task_name,
+      rscript = system.file("mock_task.R", package = "vigil"),
+      schedule = "ONCE",
+      starttime = format(Sys.time(), "%H:%M")
+    )
+
+    list(
+      task_name = task_name,
+      cleanup = function() {
+        taskscheduleR::taskscheduler_delete(task_name)
+      }
+    )
+  } else if (Sys.info()["sysname"] == "Darwin") {
+    # Create macOS launch agent
+    agent_label <- sprintf("com.r-lib.vigil.watcher.%s", config$id)
+    plist_path <- fs::path(
+      "~/Library/LaunchAgents",
+      sprintf("%s.plist", agent_label)
+    )
+
+    list(
+      agent_label = agent_label,
+      cleanup = function() {
+        system2("launchctl", c("unload", "-w", plist_path))
+        fs::file_delete(plist_path)
+      }
+    )
+  } else {
+    # Create Linux systemd service
+    service_name <- sprintf("vigil-watcher-%s.service", config$id)
+
+    list(
+      service_name = service_name,
+      cleanup = function() {
+        system2("systemctl", c("--user", "stop", service_name))
+        system2("systemctl", c("--user", "disable", service_name))
+      }
+    )
   }
 }
 
-skip_on_unix <- function() {
-  if (.Platform$OS.type != "windows") {
-    skip("Test not run on Unix-like systems")
-  }
-}
+# Event Collection Helpers ----------------------------------------------
 
-# Verify if watcher exists
-watcher_exists <- function(id) {
-  watchers <- list_watchers()
-  id %in% watchers$id
-}
-
-# Wait for watcher to initialize
-wait_for_watcher <- function(id, timeout = 5) {
-  wait_for(function() watcher_exists(id), timeout = timeout)
-}
-
-# Create test files with specific patterns
-create_test_files <- function(dir, patterns) {
-  files <- character()
-  for (pattern in patterns) {
-    ext <- sub("*.", "", pattern)
-    file <- file.path(dir, paste0("test.", ext))
-    writeLines("test", file)
-    files <- c(files, file)
-  }
-  files
-}
-
-# Collect events in a list
+#' Create event collector
+#' @return List of functions for collecting and managing events
 event_collector <- function() {
   events <- list()
 
@@ -106,73 +142,143 @@ event_collector <- function() {
     },
     clear = function() {
       events <<- list()
+    },
+    count = function() {
+      length(events)
     }
   )
 }
 
-# Check system requirements
+#' Wait for event count with timeout
+#' @param collector Event collector
+#' @param count Expected event count
+#' @param timeout Timeout in seconds
+#' @param interval Check interval in seconds
+#' @return TRUE if count reached, FALSE if timeout
+wait_for_events <- function(collector, count, timeout = 5, interval = 0.1) {
+  checkmate::assert_number(count, lower = 0)
+  checkmate::assert_number(timeout, lower = 0)
+  checkmate::assert_number(interval, lower = 0)
+
+  end_time <- Sys.time() + timeout
+  while (Sys.time() < end_time) {
+    if (collector$count() >= count) {
+      return(TRUE)
+    }
+    Sys.sleep(interval)
+  }
+  FALSE
+}
+
+# File Operation Helpers -----------------------------------------------
+
+#' Create file with content
+#' @param path File path
+#' @param content File content
+create_file <- function(path, content = "test") {
+  checkmate::assert_string(path)
+  writeLines(content, path)
+  Sys.sleep(0.1)  # Ensure file creation is registered
+}
+
+#' Modify existing file
+#' @param path File path
+#' @param content New content
+modify_file <- function(path, content = "modified") {
+  checkmate::assert_string(path)
+  checkmate::assert_file_exists(path)
+  writeLines(content, path)
+  Sys.sleep(0.1)  # Ensure modification is registered
+}
+
+#' Delete file
+#' @param path File path
+delete_file <- function(path) {
+  checkmate::assert_string(path)
+  unlink(path)
+  Sys.sleep(0.1)  # Ensure deletion is registered
+}
+
+# System Requirement Checks --------------------------------------------
+
+#' Check if inotify is available
+#' @return TRUE if inotify-tools is installed
 has_inotify <- function() {
   if (.Platform$OS.type == "windows") return(FALSE)
-  nzchar(Sys::which("inotifywait"))
+  nzchar(Sys.which("inotifywait"))
 }
 
+#' Check if fswatch is available
+#' @return TRUE if fswatch is installed
 has_fswatch <- function() {
   if (.Platform$OS.type == "windows") return(FALSE)
-  nzchar(Sys::which("fswatch"))
+  nzchar(Sys.which("fswatch"))
 }
 
-# Platform-specific file operations
-create_file <- function(path, content = "test") {
-  con <- file(path, "wb")
-  on.exit(close(con))
-  writeLines(content, con)
-  Sys.sleep(0.1)  # Small delay to ensure file is written
-}
+# Test Environment Wrappers -------------------------------------------
 
-modify_file <- function(path, content = "modified") {
-  con <- file(path, "wb")
-  on.exit(close(con))
-  writeLines(content, con)
-  Sys.sleep(0.1)  # Small delay to ensure file is written
-}
-
-delete_file <- function(path) {
-  unlink(path)
-  Sys.sleep(0.1)  # Small delay to ensure file is deleted
-}
-
-# Test environment setup with cleanup
+#' Run code with test environment
+#' @param code Code to execute in test environment
 with_test_env <- function(code) {
   env <- setup_test_env()
-  on.exit(env$cleanup())
+  withr::defer(env$cleanup())
 
-  # Create common test directories
-  fs::dir_create(file.path(env$dir, "subdir"))
-
-  # Execute test code with environment
   force(code)
 }
 
-# Safe process creation and cleanup
+#' Run code with mock process
+#' @param code Code to execute with mock process
 with_mock_process <- function(code) {
   env <- setup_test_env()
-  on.exit(env$cleanup())
+  withr::defer(env$cleanup())
 
   mock <- create_mock_process(env)
-  on.exit(mock$cleanup(), add = TRUE)
+  withr::defer(mock$cleanup())
 
-  # Execute test code with mock process
   force(code)
 }
 
-# Temporary callback script creation
+#' Create and clean up temporary callback script
+#' @param code Code to execute with callback script
 with_callback_script <- function(code) {
   env <- setup_test_env()
-  on.exit(env$cleanup())
+  withr::defer(env$cleanup())
 
-  script_path <- file.path(env$dir, "callback.R")
-  writeLines('message("Callback executed for:", event$path)', script_path)
+  script_path <- fs::path(env$dir, "callback.R")
+  writeLines('
+    message("Callback executed for:", event$path)
+    writeLines(
+      sprintf("%s: %s", event$change_type, basename(event$path)),
+      file.path(dirname(event$path), "events.txt"),
+      append = TRUE
+    )
+  ', script_path)
 
-  # Execute test code with script path
   force(code)
+}
+
+# Skip Helpers -------------------------------------------------------
+
+skip_on_windows <- function() {
+  if (.Platform$OS.type == "windows") {
+    skip("Test not run on Windows")
+  }
+}
+
+skip_on_unix <- function() {
+  if (.Platform$OS.type != "windows") {
+    skip("Test not run on Unix-like systems")
+  }
+}
+
+skip_without_inotify <- function() {
+  if (!has_inotify()) {
+    skip("Test requires inotify-tools")
+  }
+}
+
+skip_without_fswatch <- function() {
+  if (!has_fswatch()) {
+    skip("Test requires fswatch")
+  }
 }
