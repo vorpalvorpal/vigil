@@ -9,27 +9,34 @@
 ' {{WATCHER_ID}}    - Unique identifier for this watcher instance
 ' {{VIGIL_DIR}}     - Directory for vigil files
 ' {{WATCH_PATH}}    - Directory to monitor
-' {{PATTERN}}       - File pattern to match (e.g., "*.csv")
+' {{PATTERN}}       - Regex pattern to match
 ' {{RECURSIVE}}     - "True" or "False" for recursive watching
 
 Option Explicit
 
 ' Configuration
-Const WATCH_MODE = "{{WATCH_MODE}}"     ' Watching mode
-Const CHANGE_TYPE = "{{CHANGE_TYPE}}"    ' Type of changes to monitor
-Const NO_CLEANUP = "{{NO_CLEANUP}}"      ' Preserve event files
+Const WATCH_MODE = "{{WATCH_MODE}}"
+Const CHANGE_TYPE = "{{CHANGE_TYPE}}"
+Const NO_CLEANUP = "{{NO_CLEANUP}}"
 
 ' Create required objects
-Dim objFSO, objShell, watchFolder
+Dim objFSO, objShell, objRegEx, watchFolder
 Set objFSO = CreateObject("Scripting.FileSystemObject")
 Set objShell = WScript.CreateObject("WScript.Shell")
+Set objRegEx = New RegExp
+
+' Configure regex
+With objRegEx
+    .Pattern = "{{PATTERN}}"
+    .Global = True
+    .IgnoreCase = False
+End With
 
 ' Write process ID file for tracking
 With CreateObject("ADODB.Stream")
     .Open
     .Type = 2 ' Text mode
     .Charset = "utf-8"
-    ' Get current process ID and write to tracking file
     .WriteText WScript.GetObject("winmgmts:").Get("Win32_Process.Handle='" & _
                CreateObject("WScript.Shell").Exec("cmd /c echo %%" & "pid%%").StdOut.ReadAll & "'").ProcessId & _
                " {{WATCHER_ID}}"
@@ -40,11 +47,11 @@ End With
 ' Cleanup subroutine - removes process and event files
 Sub Cleanup(exitScript)
     On Error Resume Next
-    Dim processFile
-    processFile = "{{VIGIL_DIR}}\process_{{WATCHER_ID}}.txt"
 
     ' Remove process tracking file
-    If objFSO.FileExists(processFile) Then objFSO.DeleteFile(processFile)
+    If objFSO.FileExists("{{VIGIL_DIR}}\process_{{WATCHER_ID}}.txt") Then
+        objFSO.DeleteFile("{{VIGIL_DIR}}\process_{{WATCHER_ID}}.txt")
+    End If
 
     ' Clean up event files if configured
     If NO_CLEANUP <> "true" Then
@@ -71,6 +78,11 @@ Sub HandleFileEvent(eventType, file)
 
     ' Only process events matching configured type
     If CHANGE_TYPE <> "any" And eventType <> CHANGE_TYPE Then
+        Exit Sub
+    End If
+
+    ' Check if file matches pattern
+    If Not objRegEx.Test(objFSO.GetFileName(file)) Then
         Exit Sub
     End If
 
@@ -111,7 +123,6 @@ End Sub
 Set watchFolder = CreateObject("System.IO.FileSystemWatcher")
 With watchFolder
     .Path = "{{WATCH_PATH}}"
-    .Filter = "{{PATTERN}}"
     .NotifyFilter = 17 ' LastWrite + FileName + DirectoryName
     .IncludeSubdirectories = {{RECURSIVE}}
     .EnableRaisingEvents = True

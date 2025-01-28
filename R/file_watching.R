@@ -75,7 +75,6 @@ watch_files_windows <- function(config) {
 #' }
 #' @keywords internal
 watch_files_unix <- function(config) {
-  print("watch_files_unix")
   # Check for required tools
   has_inotify <-
     sys::exec_internal("command", args = c("-v", "inotifywait"), error = FALSE) |>
@@ -105,7 +104,6 @@ watch_files_unix <- function(config) {
   )
 
   tryCatch({
-    print("tryCatch")
     # Write and set permissions
     writeLines(script, script_path)
     fs::file_chmod(script_path, "0755")
@@ -141,15 +139,31 @@ create_windows_watcher_script <- function(config) {
   config$change_type <- config$change_type %||% "any"
   config$no_cleanup <- config$no_cleanup %||% "false"
 
+  # Get absolute paths
+  vigil_dir <- fs::path_abs(get_vigil_dir())
+  watch_path <- fs::path_abs(config$path)
+
+  # Convert R regex to VBScript regex pattern if provided
+  vbs_pattern <- if (!is.null(config$pattern)) {
+    # VBScript uses slightly different regex syntax
+    pattern <- config$pattern
+    pattern <- sub("\\\\d", "[0-9]", pattern)  # \d not supported in VBScript
+    pattern <- sub("\\\\w", "[A-Za-z0-9_]", pattern)  # \w not supported
+    pattern <- sub("\\\\s", "[ \\t\\n\\r]", pattern)  # \s not supported
+    pattern
+  } else {
+    ".*"  # Match everything if no pattern provided
+  }
+
   # Replace template variables
   script <- paste(template, collapse = "\n")
   script <- gsub("{{WATCH_MODE}}", config$watch_mode, script, fixed = TRUE)
   script <- gsub("{{CHANGE_TYPE}}", config$change_type, script, fixed = TRUE)
   script <- gsub("{{NO_CLEANUP}}", config$no_cleanup, script, fixed = TRUE)
   script <- gsub("{{WATCHER_ID}}", config$id, script, fixed = TRUE)
-  script <- gsub("{{VIGIL_DIR}}", get_vigil_dir(), script, fixed = TRUE)
-  script <- gsub("{{WATCH_PATH}}", config$path, script, fixed = TRUE)
-  script <- gsub("{{PATTERN}}", config$pattern %||% "*.*", script, fixed = TRUE)
+  script <- gsub("{{VIGIL_DIR}}", vigil_dir, script, fixed = TRUE)
+  script <- gsub("{{WATCH_PATH}}", watch_path, script, fixed = TRUE)
+  script <- gsub("{{PATTERN}}", vbs_pattern, script, fixed = TRUE)
   script <- gsub("{{RECURSIVE}}", if(config$recursive) "True" else "False", script, fixed = TRUE)
 
   script
@@ -160,7 +174,6 @@ create_windows_watcher_script <- function(config) {
 #' @return Character string containing shell script code
 #' @keywords internal
 create_unix_watcher_script <- function(config) {
-  print("create_unix_watcher_script")
   # Read template
   template <-
     pkgload::inst("vigil") |>
@@ -173,14 +186,18 @@ create_unix_watcher_script <- function(config) {
   config$change_type <- config$change_type %||% "any"
   config$no_cleanup <- config$no_cleanup %||% "false"
 
+  # Get absolute paths
+  vigil_dir <- fs::path_abs(get_vigil_dir())
+  watch_path <- fs::path_abs(config$path)
+
   # Replace template variables
   script <- paste(template, collapse = "\n")
   script <- gsub("{{WATCH_MODE}}", config$watch_mode, script, fixed = TRUE)
   script <- gsub("{{CHANGE_TYPE}}", config$change_type, script, fixed = TRUE)
   script <- gsub("{{NO_CLEANUP}}", config$no_cleanup, script, fixed = TRUE)
   script <- gsub("{{WATCHER_ID}}", config$id, script, fixed = TRUE)
-  script <- gsub("{{VIGIL_DIR}}", get_vigil_dir(), script, fixed = TRUE)
-  script <- gsub("{{WATCH_PATH}}", config$path, script, fixed = TRUE)
+  script <- gsub("{{VIGIL_DIR}}", vigil_dir, script, fixed = TRUE)
+  script <- gsub("{{WATCH_PATH}}", watch_path, script, fixed = TRUE)
 
   # Handle recursive flag
   recursive_flag <- if(config$recursive) "-r" else ""
@@ -188,31 +205,17 @@ create_unix_watcher_script <- function(config) {
 
   # Handle pattern for inotifywait/fswatch
   if (!is.null(config$pattern)) {
-    # Convert glob pattern to extended regex for inotifywait
-    pattern <- glob2regexp(config$pattern)
-    script <- gsub("inotifywait -m", sprintf("inotifywait -m --include '%s'", pattern), script)
-    script <- gsub("fswatch", sprintf("fswatch -e '%s'", pattern), script)
+    script <- gsub(
+      "inotifywait -m",
+      sprintf("inotifywait -m --regexp '%s'", config$pattern),
+      script
+    )
+    script <- gsub(
+      "fswatch",
+      sprintf("fswatch --regexp '%s'", config$pattern),
+      script
+    )
   }
-  print("return script")
+
   script
 }
-
-#' Convert glob pattern to extended regular expression
-#' @param pattern Glob pattern (e.g., "*.csv")
-#' @return Extended regular expression
-#' @keywords internal
-glob2regexp <- function(pattern) {
-  # Remove any directory parts
-  pattern <- basename(pattern)
-
-  # Escape special regex characters
-  pattern <- gsub("([.^$+(){}\\[\\]|])", "\\\\\\1", pattern)
-
-  # Convert glob patterns to regex
-  pattern <- gsub("\\*", ".*", pattern)
-  pattern <- gsub("\\?", ".", pattern)
-
-  # Add start/end anchors
-  paste0("^", pattern, "$")
-}
-

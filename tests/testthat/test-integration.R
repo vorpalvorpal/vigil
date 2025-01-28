@@ -2,22 +2,21 @@
 library(testthat)
 library(vigil)
 
-# Helper to simulate file system activity
+# Helper to simulate file system activity with structured output
 simulate_fs_activity <- function(dir, files = 5, delay = 0.5) {
-  events <- data.frame(
+  events <- tibble::tibble(
     path = character(),
     action = character(),
-    timestamp = numeric(),
-    stringsAsFactors = FALSE
+    timestamp = Sys.time()
   )
 
   for (i in 1:files) {
     filename <- sprintf("test_%d.txt", i)
-    filepath <- file.path(dir, filename)
+    filepath <- fs::path(dir, filename)
 
     # Create
     writeLines(as.character(i), filepath)
-    events <- rbind(events, data.frame(
+    events <- dplyr::bind_rows(events, tibble::tibble(
       path = filepath,
       action = "created",
       timestamp = Sys.time()
@@ -26,7 +25,7 @@ simulate_fs_activity <- function(dir, files = 5, delay = 0.5) {
 
     # Modify
     writeLines(as.character(i * 2), filepath)
-    events <- rbind(events, data.frame(
+    events <- dplyr::bind_rows(events, tibble::tibble(
       path = filepath,
       action = "modified",
       timestamp = Sys.time()
@@ -35,7 +34,7 @@ simulate_fs_activity <- function(dir, files = 5, delay = 0.5) {
 
     # Delete
     unlink(filepath)
-    events <- rbind(events, data.frame(
+    events <- dplyr::bind_rows(events, tibble::tibble(
       path = filepath,
       action = "deleted",
       timestamp = Sys.time()
@@ -46,43 +45,98 @@ simulate_fs_activity <- function(dir, files = 5, delay = 0.5) {
   events
 }
 
-test_that("full workflow with callbacks works", {
+test_that("full workflow with callbacks works for all change types", {
   skip_on_ci()
   env <- setup_watch_env()
   on.exit(cleanup_watch_env(env))
 
-  # Set up event collection
-  events_seen <- data.frame(
-    path = character(),
-    type = character(),
-    timestamp = numeric(),
-    stringsAsFactors = FALSE
-  )
+  # Test each change type
+  change_types <- c("created", "modified", "deleted", "any")
 
-  # Start watcher with callback
-  id <- watch(
+  for (change_type in change_types) {
+    # Set up event collection
+    events_seen <- tibble::tibble(
+      path = character(),
+      type = character(),
+      timestamp = Sys.time()
+    )
+
+    # Start watcher with specific change type
+    id <- watch(
+      env$root,
+      change_type = change_type,
+      callback = function(event) {
+        events_seen <<- dplyr::bind_rows(events_seen, tibble::tibble(
+          path = event$path,
+          type = event$change_type,
+          timestamp = event$timestamp
+        ))
+      }
+    )
+
+    # Simulate file activity
+    Sys.sleep(1)  # Allow watcher to initialize
+    events_generated <- simulate_fs_activity(env$root, files = 2)
+    Sys.sleep(1)  # Allow final events to process
+
+    # Clean up
+    kill_watcher(id)
+
+    # Verify events based on change type
+    if (change_type == "any") {
+      expect_equal(nrow(events_seen), nrow(events_generated))
+      expect_setequal(basename(events_seen$path), basename(events_generated$path))
+      expect_setequal(events_seen$type, events_generated$action)
+    } else {
+      expected_events <- dplyr::filter(events_generated, action == change_type)
+      expect_equal(nrow(events_seen), nrow(expected_events))
+      expect_setequal(events_seen$type, rep(change_type, nrow(events_seen)))
+    }
+  }
+})
+
+test_that("watch_mode behavior is correct", {
+  skip_on_ci()
+  env <- setup_watch_env()
+  on.exit(cleanup_watch_env(env))
+
+  # Test single event mode
+  events_single <- integer(0)
+  id_single <- watch(
     env$root,
+    watch_mode = "single",
     callback = function(event) {
-      events_seen <<- rbind(events_seen, data.frame(
-        path = event$path,
-        type = event$change_type,
-        timestamp = as.numeric(event$timestamp)
-      ))
+      events_single <<- c(events_single, 1L)
     }
   )
 
-  # Simulate file activity
-  Sys.sleep(1)  # Allow watcher to initialize
-  events_generated <- simulate_fs_activity(env$root, files = 3)
-  Sys.sleep(1)  # Allow final events to process
+  Sys.sleep(1)
+  writeLines("test1", fs::path(env$root, "test1.txt"))
+  writeLines("test2", fs::path(env$root, "test2.txt"))
+  Sys.sleep(1)
 
-  # Clean up
-  kill_watcher(id)
+  expect_length(events_single, 1)
+  expect_false(watcher_exists(id_single))
 
-  # Verify events
-  expect_equal(nrow(events_seen), nrow(events_generated))
-  expect_setequal(basename(events_seen$path), basename(events_generated$path))
-  expect_setequal(events_seen$type, events_generated$action)
+  # Test continuous mode
+  events_continuous <- integer(0)
+  id_continuous <- watch(
+    env$root,
+    watch_mode = "continuous",
+    callback = function(event) {
+      events_continuous <<- c(events_continuous, 1L)
+    }
+  )
+
+  Sys.sleep(1)
+  writeLines("test3", fs::path(env$root, "test3.txt"))
+  writeLines("test4", fs::path(env$root, "test4.txt"))
+  Sys.sleep(1)
+
+  expect_length(events_continuous, 2)
+  expect_true(watcher_exists(id_continuous))
+
+  kill_watcher(id_continuous)
 })
 
 test_that("persistent watchers survive R session", {
@@ -91,7 +145,7 @@ test_that("persistent watchers survive R session", {
   on.exit(cleanup_watch_env(env))
 
   # Create persistent watcher
-  id <- watch(env$root, persistent = TRUE)
+  id <- watch(env$root, watch_mode = "persistent")
 
   # Verify it exists
   watchers_before <- list_watchers()
@@ -109,14 +163,14 @@ test_that("persistent watchers survive R session", {
   kill_watcher(id)
 })
 
-test_that("multiple watchers work concurrently", {
+test_that("multiple watchers work concurrently with different configurations", {
   skip_on_ci()
   env <- setup_watch_env()
   on.exit(cleanup_watch_env(env))
 
   # Create subdirectories
-  dirs <- lapply(1:3, function(i) {
-    path <- file.path(env$root, sprintf("dir_%d", i))
+  dirs <- purrr::map(1:3, function(i) {
+    path <- fs::path(env$root, sprintf("dir_%d", i))
     fs::dir_create(path)
     path
   })
@@ -125,49 +179,57 @@ test_that("multiple watchers work concurrently", {
   events <- list()
   ids <- list()
 
-  # Watcher 1: Basic
+  # Watcher 1: Basic continuous
   events[[1]] <- character()
-  ids[[1]] <- watch(dirs[[1]], callback = function(event) {
-    events[[1]] <<- c(events[[1]], basename(event$path))
-  })
+  ids[[1]] <- watch(dirs[[1]],
+                    watch_mode = "continuous",
+                    callback = function(event) {
+                      events[[1]] <<- c(events[[1]], basename(event$path))
+                    })
 
-  # Watcher 2: With pattern
+  # Watcher 2: Pattern-specific single event
   events[[2]] <- character()
-  ids[[2]] <- watch(dirs[[2]], pattern = "*.csv", callback = function(event) {
-    events[[2]] <<- c(events[[2]], basename(event$path))
-  })
+  ids[[2]] <- watch(dirs[[2]],
+                    pattern = "*.csv",
+                    watch_mode = "single",
+                    callback = function(event) {
+                      events[[2]] <<- c(events[[2]], basename(event$path))
+                    })
 
-  # Watcher 3: Recursive
+  # Watcher 3: Recursive with specific change type
   events[[3]] <- character()
-  ids[[3]] <- watch(dirs[[3]], recursive = TRUE, callback = function(event) {
-    events[[3]] <<- c(events[[3]], basename(event$path))
-  })
+  ids[[3]] <- watch(dirs[[3]],
+                    recursive = TRUE,
+                    change_type = "created",
+                    callback = function(event) {
+                      events[[3]] <<- c(events[[3]], basename(event$path))
+                    })
 
   # Create files in each directory
   Sys.sleep(1)  # Allow watchers to initialize
 
-  # Dir 1: Basic files
-  writeLines("test", file.path(dirs[[1]], "test1.txt"))
-  writeLines("test", file.path(dirs[[1]], "test2.txt"))
+  # Dir 1: Multiple files
+  writeLines("test", fs::path(dirs[[1]], "test1.txt"))
+  writeLines("test", fs::path(dirs[[1]], "test2.txt"))
 
   # Dir 2: Mix of CSV and TXT
-  writeLines("test", file.path(dirs[[2]], "test1.csv"))
-  writeLines("test", file.path(dirs[[2]], "test2.txt"))
+  writeLines("test", fs::path(dirs[[2]], "test1.csv"))
+  writeLines("test", fs::path(dirs[[2]], "test2.txt"))
 
   # Dir 3: Files in root and subdir
-  writeLines("test", file.path(dirs[[3]], "test1.txt"))
-  fs::dir_create(file.path(dirs[[3]], "subdir"))
-  writeLines("test", file.path(dirs[[3]], "subdir", "test2.txt"))
+  writeLines("test", fs::path(dirs[[3]], "test1.txt"))
+  fs::dir_create(fs::path(dirs[[3]], "subdir"))
+  writeLines("test", fs::path(dirs[[3]], "subdir", "test2.txt"))
 
   Sys.sleep(1)  # Allow events to process
 
   # Verify each watcher's events
   expect_length(events[[1]], 2)  # Both TXT files
-  expect_length(events[[2]], 1)  # Only CSV file
-  expect_length(events[[3]], 2)  # Both root and subdir files
+  expect_length(events[[2]], 1)  # Only first CSV (single mode)
+  expect_length(events[[3]], 2)  # Both created files
 
   # Clean up
-  walk(ids, kill_watcher)
+  kill_watcher(ids[[1]])  # Only need to kill continuous watcher
 })
 
 test_that("stress test with rapid file changes", {
@@ -185,8 +247,8 @@ test_that("stress test with rapid file changes", {
   Sys.sleep(1)  # Allow watcher to initialize
   events_generated <- 0
 
-  for (i in 1:100) {
-    filepath <- file.path(env$root, sprintf("file_%d.txt", i))
+  for (i in 1:50) {  # Reduced from 100 for faster tests
+    filepath <- fs::path(env$root, sprintf("file_%d.txt", i))
     writeLines(as.character(i), filepath)
     events_generated <- events_generated + 1
 

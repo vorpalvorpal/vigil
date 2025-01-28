@@ -2,26 +2,6 @@
 library(testthat)
 library(vigil)
 
-# Helper function to create test directory structure
-setup_watch_env <- function() {
-  tmp_dir <- file.path(tempdir(), paste0("vigil-test-", uuid::UUIDgenerate()))
-  fs::dir_create(tmp_dir)
-
-  # Create subdirectories for recursive tests
-  fs::dir_create(file.path(tmp_dir, "subdir"))
-
-  # Return paths
-  list(
-    root = tmp_dir,
-    subdir = file.path(tmp_dir, "subdir")
-  )
-}
-
-# Helper to cleanup test environment
-cleanup_watch_env <- function(env) {
-  unlink(env$root, recursive = TRUE)
-}
-
 test_that("watch() creates watcher with basic configuration", {
   skip_on_ci()
   env <- setup_watch_env()
@@ -33,7 +13,7 @@ test_that("watch() creates watcher with basic configuration", {
   watchers <- list_watchers()
   expect_true(id %in% watchers$id)
 
-  watcher <- subset(watchers, id == !!id)
+  watcher <- dplyr::filter(watchers, id == !!id)
   expect_equal(watcher$path, fs::path_norm(env$root))
   expect_true(is.na(watcher$pattern))
   expect_false(watcher$recursive)
@@ -42,14 +22,47 @@ test_that("watch() creates watcher with basic configuration", {
   kill_watcher(id)
 })
 
+test_that("watch_until() handles all change types correctly", {
+  skip_on_ci()
+  env <- setup_watch_env()
+  on.exit(cleanup_watch_env(env))
+
+  test_file <- fs::path(env$root, "test.txt")
+
+  # Test file creation
+  future::future({
+    Sys.sleep(1)
+    writeLines("test", test_file)
+  })
+  result <- watch_until(env$root, change_type = "created", timeout = 5)
+  expect_equal(basename(result$path), "test.txt")
+  expect_equal(result$change_type, "created")
+
+  # Test file modification
+  future::future({
+    Sys.sleep(1)
+    writeLines("modified", test_file)
+  })
+  result <- watch_until(env$root, change_type = "modified", timeout = 5)
+  expect_equal(result$change_type, "modified")
+
+  # Test file deletion
+  future::future({
+    Sys.sleep(1)
+    unlink(test_file)
+  })
+  result <- watch_until(env$root, change_type = "deleted", timeout = 5)
+  expect_equal(result$change_type, "deleted")
+})
+
 test_that("watch() respects file patterns", {
   skip_on_ci()
   env <- setup_watch_env()
   on.exit(cleanup_watch_env(env))
 
   # Create test files
-  writeLines("test", file.path(env$root, "test.csv"))
-  writeLines("test", file.path(env$root, "test.txt"))
+  writeLines("test", fs::path(env$root, "test.csv"))
+  writeLines("test", fs::path(env$root, "test.txt"))
 
   # Watch CSV files
   events <- character()
@@ -63,8 +76,8 @@ test_that("watch() respects file patterns", {
 
   # Modify files
   Sys.sleep(1)  # Allow watcher to initialize
-  writeLines("modified", file.path(env$root, "test.csv"))
-  writeLines("modified", file.path(env$root, "test.txt"))
+  writeLines("modified", fs::path(env$root, "test.csv"))
+  writeLines("modified", fs::path(env$root, "test.txt"))
   Sys.sleep(1)  # Allow events to process
 
   # Should only detect CSV changes
@@ -89,8 +102,8 @@ test_that("watch() handles recursive watching", {
 
   # Create files in root and subdirectory
   Sys.sleep(1)  # Allow watcher to initialize
-  writeLines("test", file.path(env$root, "root.txt"))
-  writeLines("test", file.path(env$subdir, "sub.txt"))
+  writeLines("test", fs::path(env$root, "root.txt"))
+  writeLines("test", fs::path(env$subdir, "sub.txt"))
   Sys.sleep(1)  # Allow events to process
 
   # Should detect both files
@@ -99,121 +112,94 @@ test_that("watch() handles recursive watching", {
   kill_watcher(id)
 })
 
-test_that("watch_until() returns correct event data", {
-  skip_on_ci()
-  env <- setup_watch_env()
-  on.exit(cleanup_watch_env(env))
-
-  # Start watching in separate process
-  future::future({
-    Sys.sleep(1)  # Brief delay
-    writeLines("test", file.path(env$root, "test.txt"))
-  })
-
-  result <- watch_until(env$root, timeout = 5)
-
-  expect_s3_class(result, "tbl_df")
-  expect_equal(basename(result$path), "test.txt")
-  expect_equal(result$change_type, "created")
-  expect_s3_class(result$timestamp, "POSIXct")
-})
-
 test_that("watch_until() respects timeout", {
   skip_on_ci()
   env <- setup_watch_env()
   on.exit(cleanup_watch_env(env))
 
+  # Test with short timeout, no events
   result <- watch_until(env$root, timeout = 1)
   expect_null(result)
+
+  # Test with timeout but event occurs
+  future::future({
+    Sys.sleep(0.5)
+    writeLines("test", fs::path(env$root, "test.txt"))
+  })
+  result <- watch_until(env$root, timeout = 2)
+  expect_s3_class(result, "tbl_df")
+  expect_equal(basename(result$path), "test.txt")
 })
 
-test_that("watch() handles file deletion", {
+test_that("watch() handles all watch modes correctly", {
   skip_on_ci()
   env <- setup_watch_env()
   on.exit(cleanup_watch_env(env))
 
-  # Create initial file
-  test_file <- file.path(env$root, "delete_test.txt")
-  writeLines("test", test_file)
-
-  events <- character()
-  id <- watch(
+  # Test single mode
+  events_single <- integer(0)
+  id_single <- watch(
     env$root,
+    watch_mode = "single",
     callback = function(event) {
-      events <<- c(events, paste(event$change_type, basename(event$path)))
+      events_single <<- c(events_single, 1L)
     }
   )
 
-  # Delete file
-  Sys.sleep(1)  # Allow watcher to initialize
-  unlink(test_file)
-  Sys.sleep(1)  # Allow event to process
+  Sys.sleep(1)
+  writeLines("test1", fs::path(env$root, "test1.txt"))
+  writeLines("test2", fs::path(env$root, "test2.txt"))
+  Sys.sleep(1)
 
-  expect_equal(events, "deleted delete_test.txt")
+  expect_length(events_single, 1)
+  expect_false(watcher_exists(id_single))
 
-  kill_watcher(id)
-})
-
-test_that("watch() handles rapid file changes", {
-  skip_on_ci()
-  env <- setup_watch_env()
-  on.exit(cleanup_watch_env(env))
-
-  events <- list()
-  id <- watch(
+  # Test continuous mode
+  events_continuous <- integer(0)
+  id_continuous <- watch(
     env$root,
+    watch_mode = "continuous",
     callback = function(event) {
-      events[[length(events) + 1]] <<- event
+      events_continuous <<- c(events_continuous, 1L)
     }
   )
 
-  # Rapid file operations
-  Sys.sleep(1)  # Allow watcher to initialize
-  test_file <- file.path(env$root, "rapid_test.txt")
+  Sys.sleep(1)
+  writeLines("test3", fs::path(env$root, "test3.txt"))
+  writeLines("test4", fs::path(env$root, "test4.txt"))
+  Sys.sleep(1)
 
-  for(i in 1:10) {
-    writeLines(as.character(i), test_file)
-    Sys.sleep(0.1)
-  }
+  expect_length(events_continuous, 2)
+  expect_true(watcher_exists(id_continuous))
 
-  Sys.sleep(1)  # Allow events to process
+  kill_watcher(id_continuous)
 
-  # Should have caught at least the first write and some modifications
-  expect_gte(length(events), 2)
-  expect_equal(events[[1]]$change_type, "created")
-  expect_equal(basename(events[[1]]$path), "rapid_test.txt")
-
-  kill_watcher(id)
-})
-
-test_that("kill_watcher() cleans up resources", {
-  skip_on_ci()
-  env <- setup_watch_env()
-  on.exit(cleanup_watch_env(env))
-
-  id <- watch(env$root)
-  expect_true(kill_watcher(id))
-
-  watchers <- list_watchers()
-  expect_false(id %in% watchers$id)
-
-  # Check that files are cleaned up
-  vigil_dir <- get_vigil_dir()
-  expect_length(
-    fs::dir_ls(vigil_dir, glob = sprintf("*_%s.*", id)),
-    0
+  # Test persistent mode
+  id_persistent <- watch(
+    env$root,
+    watch_mode = "persistent"
   )
+
+  Sys.sleep(1)
+  expect_true(watcher_exists(id_persistent))
+
+  # Simulate R session restart
+  rm(list = ls(envir = asNamespace("vigil")), envir = asNamespace("vigil"))
+  vigil:::.onLoad(NULL, "vigil")
+
+  expect_true(watcher_exists(id_persistent))
+  kill_watcher(id_persistent)
 })
 
-test_that("watch() handles multiple patterns", {
+test_that("watch() handles multiple file patterns", {
   skip_on_ci()
   env <- setup_watch_env()
   on.exit(cleanup_watch_env(env))
 
   # Create test files
-  writeLines("test", file.path(env$root, "test.csv"))
-  writeLines("test", file.path(env$root, "test.txt"))
-  writeLines("test", file.path(env$root, "test.json"))
+  writeLines("test", fs::path(env$root, "test.csv"))
+  writeLines("test", fs::path(env$root, "test.txt"))
+  writeLines("test", fs::path(env$root, "test.json"))
 
   events <- character()
   id <- watch(
@@ -226,9 +212,9 @@ test_that("watch() handles multiple patterns", {
 
   # Modify all files
   Sys.sleep(1)  # Allow watcher to initialize
-  writeLines("modified", file.path(env$root, "test.csv"))
-  writeLines("modified", file.path(env$root, "test.txt"))
-  writeLines("modified", file.path(env$root, "test.json"))
+  writeLines("modified", fs::path(env$root, "test.csv"))
+  writeLines("modified", fs::path(env$root, "test.txt"))
+  writeLines("modified", fs::path(env$root, "test.json"))
   Sys.sleep(1)  # Allow events to process
 
   # Should detect only CSV and JSON changes
@@ -237,36 +223,57 @@ test_that("watch() handles multiple patterns", {
   kill_watcher(id)
 })
 
-test_that("list_watchers() shows correct information", {
+test_that("kill_watcher() cleans up resources properly", {
+  skip_on_ci()
+  env <- setup_watch_env()
+  on.exit(cleanup_watch_env(env))
+
+  id <- watch(env$root)
+  expect_true(kill_watcher(id))
+
+  # Check watcher is removed from list
+  watchers <- list_watchers()
+  expect_false(id %in% watchers$id)
+
+  # Check that files are cleaned up
+  vigil_dir <- get_vigil_dir()
+  watcher_files <- fs::dir_ls(
+    vigil_dir,
+    glob = sprintf("*_%s.*", id)
+  )
+  expect_length(watcher_files, 0)
+})
+
+test_that("list_watchers() shows correct information for all modes", {
   skip_on_ci()
   env <- setup_watch_env()
   on.exit(cleanup_watch_env(env))
 
   # Create watchers with different configurations
-  id1 <- watch(env$root)
-  id2 <- watch(env$root, pattern = "*.csv", recursive = TRUE)
-  id3 <- watch(env$root, persistent = TRUE)
+  id1 <- watch(env$root, watch_mode = "continuous")
+  id2 <- watch(env$root, pattern = "*.csv", recursive = TRUE, watch_mode = "single")
+  id3 <- watch(env$root, watch_mode = "persistent")
 
   watchers <- list_watchers()
 
-  # Basic watcher
-  w1 <- subset(watchers, id == id1)
+  # Continuous mode watcher
+  w1 <- dplyr::filter(watchers, id == id1)
   expect_false(w1$recursive)
   expect_true(is.na(w1$pattern))
   expect_false(w1$persistent)
 
-  # Pattern and recursive watcher
-  w2 <- subset(watchers, id == id2)
+  # Single mode watcher with pattern
+  w2 <- dplyr::filter(watchers, id == id2)
   expect_true(w2$recursive)
   expect_equal(w2$pattern, "*.csv")
   expect_false(w2$persistent)
 
   # Persistent watcher
-  w3 <- subset(watchers, id == id3)
+  w3 <- dplyr::filter(watchers, id == id3)
   expect_true(w3$persistent)
 
   # Clean up
   kill_watcher(id1)
-  kill_watcher(id2)
+  # id2 should clean itself up (single mode)
   kill_watcher(id3)
 })

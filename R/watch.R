@@ -27,20 +27,28 @@
 #' @return Invisibly returns the watcher ID (character string)
 #' @export
 watch <- function(path,
-                  pattern = NULL,
+                  pattern = NULL,  # Now expects a regex pattern
                   recursive = FALSE,
                   callback = NULL,
                   watch_mode = "continuous",
                   change_type = "any") {
   # Validate inputs
   checkmate::assert_directory_exists(path)
-  checkmate::assert_character(pattern, null.ok = TRUE)
+  if (!is.null(pattern)) {
+    checkmate::assert_character(pattern, len = 1)
+    # Verify it's a valid regex
+    tryCatch(
+      grepl(pattern, "test string"),
+      error = function(e) cli::cli_abort("Invalid regular expression pattern")
+    )
+  }
   checkmate::assert_flag(recursive)
   checkmate::assert_choice(watch_mode, c("single", "continuous", "persistent"))
   checkmate::assert_choice(change_type, c("created", "modified", "deleted", "any"))
 
   # Create unique ID for this watcher
   id <- uuid::UUIDgenerate()
+  print(id)
 
   # Create config
   config <- list(
@@ -53,9 +61,11 @@ watch <- function(path,
     change_type = change_type,
     created = format(Sys.time(), "%Y-%m-%d %H:%M:%S")
   )
+  print(config$id)
 
   # Write config file
   config_file <- fs::path(get_vigil_dir(), sprintf("watcher_%s.json", id))
+  print(config_file)
   jsonlite::write_json(config, config_file, auto_unbox = TRUE)
 
   if (watch_mode == "persistent") {
@@ -79,8 +89,12 @@ watch <- function(path,
   # Build change type message
   change_msg <- if (change_type == "any") {
     "all file changes"
-  } else {
-    paste0("file ", change_type, "s")
+  } else if (change_type == "created") {
+    "file creation"
+  } else if (change_type == "modified") {
+    "file modification"
+  } else if (change_type == "deleted") {
+    "file deletion"
   }
 
   # Build duration message
@@ -214,10 +228,18 @@ list_watchers <- function() {
 #'            timeout = 10)
 #' }
 #' @export
-watch_until <- function(path, pattern = NULL, change_type = "any", timeout = NULL) {
-  # Input validation
+watch_until <- function(path,
+                        pattern = NULL,  # Now expects a regex pattern
+                        change_type = "any",
+                        timeout = NULL) {
   checkmate::assert_directory_exists(path)
-  checkmate::assert_character(pattern, null.ok = TRUE)
+  if (!is.null(pattern)) {
+    checkmate::assert_character(pattern, len = 1)
+    tryCatch(
+      grepl(pattern, "test string"),
+      error = function(e) cli::cli_abort("Invalid regular expression pattern")
+    )
+  }
   checkmate::assert_choice(change_type, c("created", "modified", "deleted", "any"))
   checkmate::assert_number(timeout, null.ok = TRUE, lower = 0)
 
