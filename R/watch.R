@@ -11,39 +11,32 @@
 #'     \item A package function name (e.g. "dplyr::select")
 #'     \item Path to an R script
 #'   }
-#' @param persistent Whether to create a persistent watcher that survives R session
-#'   restarts (default: FALSE)
+#' @param watch_mode The watching mode (default: "continuous")
+#'   \itemize{
+#'     \item "continuous" - Watch continuously until explicitly stopped
+#'     \item "single" - Stop after first event
+#'     \item "persistent" - Continue watching even after R session ends
+#'   }
+#' @param change_type Type of changes to watch for (default: "any")
+#'   \itemize{
+#'     \item "any" - All changes
+#'     \item "created" - File creation only
+#'     \item "modified" - File modification only
+#'     \item "deleted" - File deletion only
+#'   }
 #' @return Invisibly returns the watcher ID (character string)
-#' @examples
-#' \dontrun{
-#' # Watch for all changes
-#' watch("~/Documents")
-#'
-#' # Watch CSV files only
-#' watch("~/Data", pattern = "*.csv")
-#'
-#' # Watch with callback
-#' watch("~/Downloads", callback = function(event) {
-#'   message("File changed: ", event$path)
-#' })
-#'
-#' # Watch with package function
-#' watch("~/Data", callback = "dplyr::glimpse")
-#'
-#' # Persistent watcher
-#' watch("~/important", persistent = TRUE)
-#' }
 #' @export
-watch <- function(path, pattern = NULL,
+watch <- function(path,
+                  pattern = NULL,
                   recursive = FALSE,
                   callback = NULL,
-                  mode = "continuous",
+                  watch_mode = "continuous",
                   change_type = "any") {
   # Validate inputs
   checkmate::assert_directory_exists(path)
   checkmate::assert_character(pattern, null.ok = TRUE)
   checkmate::assert_flag(recursive)
-  checkmate::assert_choice(mode, c("single", "continuous", "persistent"), null.ok = FALSE)
+  checkmate::assert_choice(watch_mode, c("single", "continuous", "persistent"))
   checkmate::assert_choice(change_type, c("created", "modified", "deleted", "any"))
 
   # Create unique ID for this watcher
@@ -56,7 +49,7 @@ watch <- function(path, pattern = NULL,
     pattern = pattern,
     recursive = recursive,
     callback = validate_callback(callback),
-    watch_mode = mode,
+    watch_mode = watch_mode,  # Using consistent naming
     change_type = change_type,
     created = format(Sys.time(), "%Y-%m-%d %H:%M:%S")
   )
@@ -65,7 +58,7 @@ watch <- function(path, pattern = NULL,
   config_file <- fs::path(get_vigil_dir(), sprintf("watcher_%s.json", id))
   jsonlite::write_json(config, config_file, auto_unbox = TRUE)
 
-  if (mode == "persistent") {
+  if (watch_mode == "persistent") {
     # Launch persistent watcher based on OS
     if (.Platform$OS.type == "windows") {
       register_persistent_windows(config)
@@ -75,19 +68,30 @@ watch <- function(path, pattern = NULL,
       register_persistent_linux(config)
     }
   } else {
-    print("Persistent: ELSE")
     # Launch regular watcher based on OS
     if (.Platform$OS.type == "windows") {
       watch_files_windows(config)
     } else {
-      print("Unix: ELSE")
       watch_files_unix(config)
-      print("end unix ELSE")
     }
   }
 
+  # Build change type message
+  change_msg <- if (change_type == "any") {
+    "all file changes"
+  } else {
+    paste0("file ", change_type, "s")
+  }
+
+  # Build duration message
+  duration_msg <- switch(watch_mode,
+                         "single" = "until first event",
+                         "persistent" = "until it is actively stopped or the computer is shut down",
+                         "continuous" = "until it is actively stopped"
+  )
+
   cli::cli_alert_success(
-    "Started {if_else(persistent, '/regular} watching {.path {path}}"
+    "Started watching for {change_msg} at {.path {path}}. Watcher will continue {duration_msg}."
   )
   invisible(id)
 }
@@ -211,13 +215,16 @@ list_watchers <- function() {
 #' }
 #' @export
 watch_until <- function(path, pattern = NULL, change_type = "any", timeout = NULL) {
+  # Input validation
   checkmate::assert_directory_exists(path)
   checkmate::assert_character(pattern, null.ok = TRUE)
   checkmate::assert_choice(change_type, c("created", "modified", "deleted", "any"))
   checkmate::assert_number(timeout, null.ok = TRUE, lower = 0)
 
-  # Create watcher ID and config
+  # Create unique ID for this watcher
   id <- uuid::UUIDgenerate()
+
+  # Create config for single-event watcher
   config <- list(
     id = id,
     path = fs::path_norm(path),
@@ -225,13 +232,17 @@ watch_until <- function(path, pattern = NULL, change_type = "any", timeout = NUL
     recursive = FALSE,
     watch_mode = "single",
     change_type = change_type,
-    no_cleanup = "true",  # We'll handle cleanup ourselves
-    created = format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+    no_cleanup = "true"  # We'll handle cleanup ourselves
   )
 
-  # Write config
+  # Write config file
   config_file <- fs::path(get_vigil_dir(), sprintf("watcher_%s.json", id))
   jsonlite::write_json(config, config_file, auto_unbox = TRUE)
+
+  # Cleanup function
+  on.exit({
+    cleanup_watcher_files(id)
+  })
 
   # Start platform-specific watcher process
   if (.Platform$OS.type == "windows") {
@@ -240,40 +251,29 @@ watch_until <- function(path, pattern = NULL, change_type = "any", timeout = NUL
     script_path <- fs::path(get_vigil_dir(), sprintf("watch_%s.vbs", id))
     writeLines(script, script_path)
 
-    px <- processx::process$new(
-      command = "cscript",
+    # Run script with timeout
+    status <- sys::exec_wait(
+      "cscript",
       args = c("//NoLogo", script_path),
-      stdout = "|",
-      stderr = "|"
+      timeout = timeout %||% 0
     )
   } else {
     # Create and run shell script
     script <- create_unix_watcher_script(config)
     script_path <- fs::path(get_vigil_dir(), sprintf("watch_%s.sh", id))
     writeLines(script, script_path)
-    fs::chmod(script_path, "0755")
+    fs::file_chmod(script_path, "0755")
 
-    px <- processx::process$new(
-      command = script_path,
-      stdout = "|",
-      stderr = "|"
+    # Run script with timeout
+    status <- sys::exec_wait(
+      script_path,
+      timeout = timeout %||% 0
     )
   }
 
-  # Cleanup function
-  cleanup <- function() {
-    if (px$is_alive()) px$kill()
-    cleanup_watcher_files(id)
-  }
-  on.exit(cleanup())
-
-  # Wait for process to exit (indicating event occurred) or timeout
-  if (is.null(timeout)) {
-    px$wait()
-  } else {
-    if (!px$wait(timeout * 1000)) {  # milliseconds
-      return(NULL)
-    }
+  # Check for timeout
+  if (status == -1) {
+    return(NULL)
   }
 
   # Process has exited - find and read the event file
@@ -287,7 +287,7 @@ watch_until <- function(path, pattern = NULL, change_type = "any", timeout = NUL
   }
 
   # Get most recent event file
-  event_file <- event_files[which.max(file.info(event_files)$mtime)]
+  event_file <- event_files[which.max(fs::file_info(event_files)$modification_time)]
   event <- jsonlite::read_json(event_file)
 
   # Return tibble with event details
