@@ -120,7 +120,9 @@ create_watcher_config <- function(path,
                                   recursive = FALSE,
                                   callback = NULL,
                                   watch_mode = "continuous",
-                                  change_type = "any") {
+                                  change_type = "any",
+                                  wait_for_event = FALSE,
+                                  timeout = NULL) {
 
   # Generate unique ID
   id <- uuid::UUIDgenerate()
@@ -140,7 +142,9 @@ create_watcher_config <- function(path,
     watch_mode = watch_mode,
     change_type = change_type,
     created = format_sql_timestamp(),
-    persistent = watch_mode == "persistent"
+    persistent = watch_mode == "persistent",
+    wait_for_event = wait_for_event,
+    timeout = timeout
   )
 }
 
@@ -228,13 +232,13 @@ watch_until <- function(path,
     # Start watcher and wait for event
     db_path <- start_watcher(config)
 
-    # Get events (guaranteed to exist by launcher)
-    events <- get_watcher_events(db_path)
+    # Return events (guaranteed to exist by launcher)
+    get_watcher_events(db_path)
 
-    # Clean up and return
-    cleanup_watcher_database(db_path)
-    events
-
+  }, finally = {
+    if (!is.null(db_path)) {
+      cleanup_watcher_database(db_path, force = !config$persistent)
+    }
   }, error = function(e) {
     if (!is.null(config$id)) {
       cleanup_watcher_database(
