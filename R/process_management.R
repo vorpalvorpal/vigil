@@ -173,7 +173,7 @@ verify_watcher_process <- function(db_path) {
       "Error verifying watcher process",
       "x" = e$message
     ))
-    FALSE
+    return(FALSE)
   })
 }
 
@@ -196,7 +196,7 @@ verify_windows_process <- function(pid, id) {
 
   # Check if it's our watcher script
   if (length(cmd_info) < 2 ||
-      !any(grepl("watch-files.vbs", cmd_info, fixed = TRUE)) ||
+      !any(grepl("watch_files.vbs", cmd_info, fixed = TRUE)) ||
       !any(grepl(id, cmd_info, fixed = TRUE))) {
     return(FALSE)
   }
@@ -219,7 +219,7 @@ verify_unix_process <- function(pid, id) {
 
   # Check if it's our watcher script
   if (length(cmd_info) == 0 ||
-      !any(grepl("watch-files.sh", cmd_info, fixed = TRUE)) ||
+      !any(grepl("watch_files.sh", cmd_info, fixed = TRUE)) ||
       !any(grepl(id, cmd_info, fixed = TRUE))) {
     return(FALSE)
   }

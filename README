@@ -71,7 +71,7 @@ watch("path/to/watch")
 
 # Watch only for new files matching a pattern
 watch("path/to/watch",
-      pattern = "\\.csv$",
+      file_pattern = "\\.csv$",
       change_type = "created")
 
 # Watch with a callback
@@ -90,7 +90,7 @@ watch("path/to/watch",
 # Create a watcher that continues after R exits
 watch("path/to/watch",
       watch_mode = "persistent",
-      callback = "path/to/callback_script.R")
+      callback = "path/to/callback.R")
 
 # List active watchers
 list_watchers()
@@ -107,7 +107,7 @@ kill_all_watchers()
 ```r
 # Wait for a specific change
 result <- watch_until("path/to/watch",
-                     pattern = "\\.txt$",
+                     file_pattern = "\\.txt$",
                      change_type = "created",
                      timeout = 60)  # timeout in seconds
 

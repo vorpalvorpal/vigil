@@ -1,4 +1,4 @@
-' Usage: cscript watch-files.vbs <database_path>
+' Usage: cscript watch_files.vbs <database_path>
 '
 ' Watches files according to configuration in SQLite database and logs events
 
@@ -116,7 +116,7 @@ Sub WriteEvent(eventType, filePath)
         Dim eventId: eventId = ExecuteSQL("SELECT last_insert_rowid();")
         If Len(eventId) > 0 Then
             CreateObject("WScript.Shell").Run _
-                "cscript //NoLogo callback-runner.vbs " & dbPath & " " & eventId & " " & _
+                "cscript //NoLogo callback_runner.vbs " & dbPath & " " & eventId & " " & _
                 callbackScript, 0, False
         End If
     End If

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Usage: ./watch-files.sh <database_path>
+# Usage: ./watch_files.sh <database_path>
 #
 # Watches files according to configuration in SQLite database and logs events
 
@@ -58,7 +58,7 @@ write_event() {
     sqlite_exec "SELECT value FROM config WHERE key='callback_script';" | while read -r callback_script; do
         if [ -n "$callback_script" ]; then
             event_id=$(sqlite_exec "SELECT last_insert_rowid();")
-            callback-runner.sh "$DB_PATH" "$event_id" "$callback_script" &
+            callback_runner.sh "$DB_PATH" "$event_id" "$callback_script" &
         fi
     done
 

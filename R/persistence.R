@@ -37,7 +37,7 @@ register_persistent <- function(id) {
 
   # Get watcher script path
   watcher_script <- get_script_path(
-    if (.Platform$OS.type == "windows") "watch-files.vbs" else "watch-files.sh"
+    if (.Platform$OS.type == "windows") "watch_files.vbs" else "watch_files.sh"
   )
 
   # Platform-specific registration

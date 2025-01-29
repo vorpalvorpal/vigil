@@ -1,7 +1,7 @@
-# callback-runner.sh
+# callback_runner.sh
 #!/bin/bash
 
-# Usage: ./callback-runner.sh <database_path> <event_id>
+# Usage: ./callback_runner.sh <database_path> <event_id>
 set -e
 
 DB_PATH="$1"

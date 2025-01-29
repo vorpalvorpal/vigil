@@ -1,4 +1,4 @@
-' Usage: cscript callback-runner.vbs <database_path> <event_id>
+' Usage: cscript callback_runner.vbs <database_path> <event_id>
 
 Option Explicit
 
