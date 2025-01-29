@@ -1,40 +1,45 @@
+# callback-runner.sh
 #!/bin/bash
 
-# Usage: ./callback-runner.sh <database_path> <event_id> <callback_script>
-#
-# Runs the callback script for a specific event and records the output
-
-set -e  # Exit on any error
+# Usage: ./callback-runner.sh <database_path> <event_id>
+set -e
 
 DB_PATH="$1"
 EVENT_ID="$2"
-CALLBACK="$3"
 
-if [ ! -f "$DB_PATH" ] || [ ! -f "$CALLBACK" ]; then
-    echo "Required files not found" >&2
+if [ ! -f "$DB_PATH" ]; then
+    echo "Database not found" >&2
     exit 1
 fi
 
-# Helper function for SQLite operations - ensures proper escaping
+# Create temporary file for output capture
+TEMP_OUT=$(mktemp)
+trap 'rm -f "$TEMP_OUT"' EXIT
+
+# Helper function for SQLite operations
 sqlite_exec() {
     sqlite3 "$DB_PATH" "$1"
 }
 
-# Create a temporary file for output capture
-TEMP_OUT=$(mktemp)
-trap 'rm -f "$TEMP_OUT"' EXIT
+# Get callback content
+CALLBACK_CONTENT=$(sqlite_exec "SELECT value FROM config WHERE key='callback_content';")
+
+if [ -z "$CALLBACK_CONTENT" ]; then
+    echo "No callback configured" >&2
+    exit 1
+fi
 
 # Run the callback in R and capture output
 Rscript -e "
-  tryCatch({
-    event <- DBI::dbGetQuery(
-      DBI::dbConnect(RSQLite::SQLite(), '$DB_PATH'),
-      'SELECT * FROM events WHERE id = $EVENT_ID'
-    )
-    source('$CALLBACK')
-  }, error = function(e) {
-    cat('Error in callback: ', conditionMessage(e), '\n')
-  })
+tryCatch({
+  event <- DBI::dbGetQuery(
+    DBI::dbConnect(RSQLite::SQLite(), '$DB_PATH'),
+    'SELECT * FROM events WHERE id = $EVENT_ID'
+  );
+  $CALLBACK_CONTENT
+}, error = function(e) {
+  cat('Error in callback: ', conditionMessage(e), '\n')
+})
 " 2>&1 > "$TEMP_OUT"
 
 # Read output and escape for SQL

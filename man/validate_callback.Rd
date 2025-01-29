@@ -2,12 +2,12 @@
 % Please edit documentation in R/utils.R
 \name{validate_callback}
 \alias{validate_callback}
-\title{Validate and normalize callback specifications}
+\title{Validate callback specifications}
 \usage{
 validate_callback(callback, db_path = NULL)
 }
 \arguments{
-\item{callback}{Function, expression, package function name, or path to R script}
+\item{callback}{Function, expression, or path to R script}
 
 \item{db_path}{Path to watcher database for storing callback info}
 }
@@ -15,6 +15,6 @@ validate_callback(callback, db_path = NULL)
 List containing validated callback info
 }
 \description{
-Validate and normalize callback specifications
+Validate callback specifications
 }
 \keyword{internal}

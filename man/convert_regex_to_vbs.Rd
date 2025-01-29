@@ -4,10 +4,10 @@
 \alias{convert_regex_to_vbs}
 \title{Convert R regex to VBScript compatible pattern}
 \usage{
-convert_regex_to_vbs(pattern)
+convert_regex_to_vbs(file_pattern)
 }
 \arguments{
-\item{pattern}{Character string containing R regular expression}
+\item{file_pattern}{Character string containing R regular expression}
 }
 \value{
 Character string containing VBScript compatible regular expression

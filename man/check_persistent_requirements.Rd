@@ -6,6 +6,9 @@
 \usage{
 check_persistent_requirements()
 }
+\value{
+Logical indicating if persistent watcher requirements are met
+}
 \description{
 Check persistent watcher requirements
 }

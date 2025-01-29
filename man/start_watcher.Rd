@@ -10,7 +10,7 @@ start_watcher(config)
 \item{config}{List containing watcher configuration}
 }
 \value{
-Process ID of watcher
+Process ID or database path depending on configuration
 }
 \description{
 Start a file watcher process

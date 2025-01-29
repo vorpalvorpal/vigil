@@ -12,7 +12,7 @@ kill_watcher(id, timeout = 5)
 \item{timeout}{Timeout in seconds for kill operation}
 }
 \value{
-Invisibly returns TRUE if successful
+Logical indicating if watcher was successfully killed
 }
 \description{
 Kill a file watcher

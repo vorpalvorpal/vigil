@@ -6,7 +6,7 @@
 \usage{
 watch(
   path,
-  pattern = NULL,
+  file_pattern = NULL,
   recursive = FALSE,
   callback = NULL,
   watch_mode = "continuous",
@@ -16,21 +16,16 @@ watch(
 \arguments{
 \item{path}{Directory path to watch}
 
-\item{pattern}{Optional file pattern to match (regex)}
+\item{file_pattern}{Optional file pattern to match (regex)}
 
 \item{recursive}{Whether to watch subdirectories}
 
-\item{callback}{Function to call when files change. Can be:
-\itemize{
-\item A function or expression accepting an event list (e.g. function(event) { process_file(event$file_path) })
-\item Path to an R script that will have access to an 'event' list containing:
-\itemize{
-\item id: Event identifier
-\item timestamp: When the event occurred
-\item event_type: "created", "modified", or "deleted"
-\item file_path: Full path to changed file
-}
-}}
+\item{callback}{Function or path to R script that will be called on file changes.
+The callback will receive an event list containing:
+- id: Event identifier
+- timestamp: When the event occurred
+- event_type: "created", "modified", or "deleted"
+- file_path: Full path to changed file}
 
 \item{watch_mode}{The watching mode:
 \itemize{
@@ -52,35 +47,4 @@ Invisibly returns the watcher ID
 }
 \description{
 Watch directory for file changes
-}
-\examples{
-\dontrun{
-# Log file changes to a CSV
-watch("~/data",
-  callback = function(event) {
-    write.csv(
-      data.frame(
-        id = event$id,
-        time = event$timestamp,
-        file = basename(event$file_path),
-        type = event$event_type
-      ),
-      "file_changes.csv",
-      append = TRUE
-    )
-  }
-)
-
-# Process new JSON files
-watch("~/incoming",
-  pattern = "\\\\.json$",
-  change_type = "created",
-  callback = function(event) {
-    if (file.exists(event$file_path)) {  # Check file still exists
-      data <- jsonlite::read_json(event$file_path)
-      process_data(data)  # User-defined processing function
-    }
-  }
-)
-}
 }

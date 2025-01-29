@@ -2,11 +2,14 @@
 % Please edit documentation in R/platform_checks.R
 \name{check_inotify}
 \alias{check_inotify}
-\title{Check inotify-tools availability on Linux}
+\title{Check inotify-tools availability and configuration on Linux}
 \usage{
 check_inotify()
 }
+\value{
+Logical indicating if inotify-tools are properly configured
+}
 \description{
-Check inotify-tools availability on Linux
+Check inotify-tools availability and configuration on Linux
 }
 \keyword{internal}

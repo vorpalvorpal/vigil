@@ -4,12 +4,12 @@
 \alias{watch_until}
 \title{Watch until specific file changes occur}
 \usage{
-watch_until(path, pattern = NULL, change_type = "any", timeout = NULL)
+watch_until(path, file_pattern = NULL, change_type = "any", timeout = NULL)
 }
 \arguments{
 \item{path}{Directory path to watch}
 
-\item{pattern}{Optional file pattern to match (regex)}
+\item{file_pattern}{Optional file pattern to match (regex)}
 
 \item{change_type}{Type of change to watch for}
 

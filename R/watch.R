@@ -1,11 +1,10 @@
 #' Watch directory for file changes
 #'
 #' @param path Directory path to watch
-#' @param pattern Optional file pattern to match (regex)
+#' @param file_pattern Optional file pattern to match (regex)
 #' @param recursive Whether to watch subdirectories
-#' @param callback Function to call when files change. Can be:
-#'   * A function or expression accepting an event list (e.g. function(event) { process_file(event$file_path) })
-#'   * Path to an R script that will have access to an 'event' list containing:
+#' @param callback Function or path to R script that will be called on file changes.
+#'   The callback will receive an event list containing:
 #'     - id: Event identifier
 #'     - timestamp: When the event occurred
 #'     - event_type: "created", "modified", or "deleted"
@@ -20,39 +19,9 @@
 #'   * "modified" - File modification only
 #'   * "deleted" - File deletion only
 #' @return Invisibly returns the watcher ID
-#' @examples
-#' \dontrun{
-#' # Log file changes to a CSV
-#' watch("~/data",
-#'   callback = function(event) {
-#'     write.csv(
-#'       data.frame(
-#'         id = event$id,
-#'         time = event$timestamp,
-#'         file = basename(event$file_path),
-#'         type = event$event_type
-#'       ),
-#'       "file_changes.csv",
-#'       append = TRUE
-#'     )
-#'   }
-#' )
-#'
-#' # Process new JSON files
-#' watch("~/incoming",
-#'   pattern = "\\.json$",
-#'   change_type = "created",
-#'   callback = function(event) {
-#'     if (file.exists(event$file_path)) {  # Check file still exists
-#'       data <- jsonlite::read_json(event$file_path)
-#'       process_data(data)  # User-defined processing function
-#'     }
-#'   }
-#' )
-#' }
 #' @export
 watch <- function(path,
-                  pattern = NULL,
+                  file_pattern = NULL,
                   recursive = FALSE,
                   callback = NULL,
                   watch_mode = "continuous",
@@ -66,12 +35,12 @@ watch <- function(path,
 
   # Basic input validation
   checkmate::assert_directory_exists(path)
-  if (!is.null(pattern)) {
-    checkmate::assert_string(pattern)
+  if (!is.null(file_pattern)) {
+    checkmate::assert_string(file_pattern)
     # Verify it's a valid regex
     tryCatch(
-      grepl(pattern, "test string"),
-      error = function(e) cli::cli_abort("Invalid regular expression pattern")
+      grepl(file_pattern, "test string"),
+      error = function(e) cli::cli_abort("Invalid regular expression file_pattern")
     )
   }
   checkmate::assert_flag(recursive)
@@ -81,7 +50,7 @@ watch <- function(path,
   # Create watcher config
   config <- create_watcher_config(
     path = path,
-    pattern = pattern,
+    file_pattern = file_pattern,
     recursive = recursive,
     callback = callback,
     watch_mode = watch_mode,
@@ -113,41 +82,6 @@ watch <- function(path,
   invisible(config$id)
 }
 
-#' Create standardized watcher configuration
-#' @keywords internal
-create_watcher_config <- function(path,
-                                  pattern = NULL,
-                                  recursive = FALSE,
-                                  callback = NULL,
-                                  watch_mode = "continuous",
-                                  change_type = "any",
-                                  wait_for_event = FALSE,
-                                  timeout = NULL) {
-
-  # Generate unique ID
-  id <- uuid::UUIDgenerate()
-
-  # Create temporary database to validate callback
-  db_path <- fs::path(get_vigil_dir(), sprintf("watcher_%s.db", id))
-
-  # Process callback with database storage
-  validated_callback <- validate_callback(callback, db_path)
-
-  # Build config
-  list(
-    id = id,
-    path = fs::path_norm(path),
-    pattern = pattern,
-    recursive = recursive,
-    watch_mode = watch_mode,
-    change_type = change_type,
-    created = format_sql_timestamp(),
-    persistent = watch_mode == "persistent",
-    wait_for_event = wait_for_event,
-    timeout = timeout
-  )
-}
-
 #' List active file watchers
 #'
 #' Returns information about all currently active file watchers.
@@ -155,7 +89,7 @@ create_watcher_config <- function(path,
 #' @return Tibble with columns:
 #'   * id - Watcher identifier
 #'   * path - Directory being watched
-#'   * pattern - File pattern (NA if none)
+#'   * file_pattern - File pattern (NA if none)
 #'   * recursive - Whether watching subdirectories
 #'   * persistent - Whether watcher is persistent
 #'   * created - When watcher was created
@@ -168,7 +102,7 @@ list_watchers <- function() {
     return(tibble::tibble(
       id = character(),
       path = character(),
-      pattern = character(),
+      file_pattern = character(),
       recursive = logical(),
       persistent = logical(),
       created = character()
@@ -182,7 +116,7 @@ list_watchers <- function() {
     tibble::tibble(
       id = config$id,
       path = config$path,
-      pattern = if (is.null(config$pattern)) NA_character_ else config$pattern,
+      file_pattern = if (is.null(config$file_pattern)) NA_character_ else config$file_pattern,
       recursive = as.logical(config$recursive),
       persistent = as.logical(config$persistent),
       created = config$created
@@ -196,22 +130,22 @@ list_watchers <- function() {
 #' timeout is reached.
 #'
 #' @param path Directory path to watch
-#' @param pattern Optional file pattern to match (regex)
+#' @param file_pattern Optional file pattern to match (regex)
 #' @param change_type Type of change to watch for
 #' @param timeout Timeout in seconds (NULL means wait indefinitely)
 #' @return Tibble with event details or NULL if timeout
 #' @export
 watch_until <- function(path,
-                        pattern = NULL,
+                        file_pattern = NULL,
                         change_type = "any",
                         timeout = NULL) {
 
   checkmate::assert_directory_exists(path)
-  if (!is.null(pattern)) {
-    checkmate::assert_string(pattern)
+  if (!is.null(file_pattern)) {
+    checkmate::assert_string(file_pattern)
     tryCatch(
-      grepl(pattern, "test string"),
-      error = function(e) cli::cli_abort("Invalid regular expression pattern")
+      grepl(file_pattern, "test string"),
+      error = function(e) cli::cli_abort("Invalid regular expression file_pattern")
     )
   }
   checkmate::assert_choice(change_type, c("created", "modified", "deleted", "any"))
@@ -220,7 +154,7 @@ watch_until <- function(path,
   # Create watcher config with wait_for_event flag
   config <- create_watcher_config(
     path = path,
-    pattern = pattern,
+    file_pattern = file_pattern,
     recursive = FALSE,
     watch_mode = "single",
     change_type = change_type,
@@ -259,7 +193,7 @@ watch_until <- function(path,
 #'
 #' @param id Watcher ID to kill
 #' @param timeout Timeout in seconds for kill operation
-#' @return Invisibly returns TRUE if successful
+#' @return Logical indicating if watcher was successfully killed
 #' @export
 kill_watcher <- function(id, timeout = 5) {
   checkmate::assert_string(id)
@@ -269,21 +203,23 @@ kill_watcher <- function(id, timeout = 5) {
 
   if (!fs::file_exists(db_path)) {
     cli::cli_alert_warning("Watcher {.val {id}} not found")
-    return(invisible(FALSE))
+    return(FALSE)
   }
 
-  if (kill_watcher_process(db_path, timeout)) {
+  success <- kill_watcher_process(db_path, timeout)
+  if (success) {
     cli::cli_alert_success("Killed watcher {.val {id}}")
-    invisible(TRUE)
   } else {
     cli::cli_alert_warning("Failed to kill watcher {.val {id}}")
-    invisible(FALSE)
   }
+
+  success
 }
 
 #' Kill all file watchers
 #'
 #' @param timeout Timeout in seconds for each kill operation
+#' @return Logical vector indicating success/failure for each watcher
 #' @export
 kill_all_watchers <- function(timeout = 5) {
   checkmate::assert_number(timeout, lower = 0)
@@ -292,7 +228,7 @@ kill_all_watchers <- function(timeout = 5) {
   watchers <- list_watchers()
   if (nrow(watchers) == 0) {
     cli::cli_alert_info("No active watchers found")
-    return(invisible())
+    return(invisible(logical(0)))
   }
 
   # Kill each watcher

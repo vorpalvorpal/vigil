@@ -2,7 +2,7 @@
 % Please edit documentation in R/process_management.R
 \name{kill_unix_process}
 \alias{kill_unix_process}
-\title{Kill a Unix process}
+\title{Kill a Unix process and its children}
 \usage{
 kill_unix_process(pid, timeout)
 }
@@ -15,6 +15,6 @@ kill_unix_process(pid, timeout)
 Boolean indicating success
 }
 \description{
-Kill a Unix process
+Kill a Unix process and its children
 }
 \keyword{internal}

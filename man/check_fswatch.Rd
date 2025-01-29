@@ -6,6 +6,9 @@
 \usage{
 check_fswatch()
 }
+\value{
+Logical indicating if fswatch is available
+}
 \description{
 Check fswatch availability on macOS
 }

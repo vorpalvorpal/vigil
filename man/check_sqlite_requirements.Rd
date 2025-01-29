@@ -6,6 +6,9 @@
 \usage{
 check_sqlite_requirements()
 }
+\value{
+Logical indicating if SQLite requirements are met
+}
 \description{
 Check SQLite availability and accessibility
 }

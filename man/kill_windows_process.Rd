@@ -2,7 +2,7 @@
 % Please edit documentation in R/process_management.R
 \name{kill_windows_process}
 \alias{kill_windows_process}
-\title{Kill a Windows process}
+\title{Kill a Windows process and its children}
 \usage{
 kill_windows_process(pid, timeout)
 }
@@ -15,6 +15,6 @@ kill_windows_process(pid, timeout)
 Boolean indicating success
 }
 \description{
-Kill a Windows process
+Kill a Windows process and its children
 }
 \keyword{internal}

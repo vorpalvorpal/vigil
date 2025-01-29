@@ -11,6 +11,9 @@ cleanup_watcher_resources(db_path, force = FALSE)
 
 \item{force}{Whether to force cleanup of persistent watcher}
 }
+\value{
+Invisible NULL
+}
 \description{
 Clean up watcher resources
 }

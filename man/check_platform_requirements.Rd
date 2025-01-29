@@ -6,6 +6,9 @@
 \usage{
 check_platform_requirements()
 }
+\value{
+Logical indicating if all requirements are met
+}
 \description{
 Check platform-specific requirements
 }

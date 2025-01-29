@@ -11,7 +11,7 @@ Tibble with columns:
 \itemize{
 \item id - Watcher identifier
 \item path - Directory being watched
-\item pattern - File pattern (NA if none)
+\item file_pattern - File pattern (NA if none)
 \item recursive - Whether watching subdirectories
 \item persistent - Whether watcher is persistent
 \item created - When watcher was created

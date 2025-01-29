@@ -13,49 +13,52 @@ create_watcher_database <- function(config) {
   db_path <- fs::path(get_vigil_dir(), sprintf("watcher_%s.db", config$id))
 
   con <- DBI::dbConnect(RSQLite::SQLite(), db_path)
-  on.exit(DBI::dbDisconnect(con))
+  tryCatch({
+    DBI::dbWithTransaction(con, {
+      # Create tables
+      DBI::dbExecute(con, "
+        CREATE TABLE config (
+          key TEXT PRIMARY KEY,
+          value TEXT,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )")
 
-  DBI::dbWithTransaction(con, {
-    # Create tables
-    DBI::dbExecute(con, "
-      CREATE TABLE config (
-        key TEXT PRIMARY KEY,
-        value TEXT,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )")
+      DBI::dbExecute(con, "
+        CREATE TABLE events (
+          id INTEGER PRIMARY KEY,
+          timestamp TEXT NOT NULL,
+          event_type TEXT NOT NULL,
+          file_path TEXT NOT NULL,
+          callback_output TEXT,
+          callback_timestamp TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )")
 
-    DBI::dbExecute(con, "
-      CREATE TABLE events (
-        id INTEGER PRIMARY KEY,
-        timestamp TEXT NOT NULL,
-        event_type TEXT NOT NULL,
-        file_path TEXT NOT NULL,
-        callback_output TEXT,
-        callback_timestamp TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )")
+      DBI::dbExecute(con, "
+        CREATE TABLE status (
+          key TEXT PRIMARY KEY,
+          value TEXT,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )")
 
-    DBI::dbExecute(con, "
-      CREATE TABLE status (
-        key TEXT PRIMARY KEY,
-        value TEXT,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )")
+      # Write configuration
+      config_df <- tibble::tibble(
+        key = names(config),
+        value = vapply(config, as.character, character(1))
+      )
+      DBI::dbWriteTable(con, "config", config_df, append = TRUE)
 
-    # Write configuration
-    config_df <- tibble::tibble(
-      key = names(config),
-      value = vapply(config, as.character, character(1))
-    )
-    DBI::dbWriteTable(con, "config", config_df, append = TRUE)
-
-    # Initialize status
-    DBI::dbExecute(con,
-                   sprintf(
-                     "INSERT INTO status (key, value) VALUES ('state', %s)",
-                     escape_sql_string("initializing")
-                   )
-    )
+      # Initialize status
+      DBI::dbExecute(
+        con,
+        sprintf(
+          "INSERT INTO status (key, value) VALUES ('state', %s)",
+          escape_sql_string("initializing")
+        )
+      )
+    })
+  }, finally = {
+    DBI::dbDisconnect(con)
   })
 
   db_path
@@ -70,10 +73,12 @@ read_watcher_config <- function(db_path) {
   db_path <- validate_db_path(db_path)
 
   con <- DBI::dbConnect(RSQLite::SQLite(), db_path)
-  on.exit(DBI::dbDisconnect(con))
-
-  config <- DBI::dbGetQuery(con, "SELECT key, value FROM config")
-  as.list(tibble::deframe(config))
+  tryCatch({
+    config <- DBI::dbGetQuery(con, "SELECT key, value FROM config")
+    as.list(tibble::deframe(config))
+  }, finally = {
+    DBI::dbDisconnect(con)
+  })
 }
 
 #' Get watcher process information
@@ -85,15 +90,17 @@ get_watcher_process <- function(db_path) {
   db_path <- validate_db_path(db_path)
 
   con <- DBI::dbConnect(RSQLite::SQLite(), db_path)
-  on.exit(DBI::dbDisconnect(con))
+  tryCatch({
+    status <- DBI::dbGetQuery(con, "SELECT key, value FROM status")
+    status_list <- as.list(tibble::deframe(status))
 
-  status <- DBI::dbGetQuery(con, "SELECT key, value FROM status")
-  status_list <- as.list(tibble::deframe(status))
-
-  list(
-    pid = as.integer(status_list$pid),
-    state = status_list$state
-  )
+    list(
+      pid = as.integer(status_list$pid),
+      state = status_list$state
+    )
+  }, finally = {
+    DBI::dbDisconnect(con)
+  })
 }
 
 #' Get events for a watcher
@@ -106,16 +113,19 @@ get_watcher_events <- function(db_path, include_output = FALSE) {
   db_path <- validate_db_path(db_path)
 
   con <- DBI::dbConnect(RSQLite::SQLite(), db_path)
-  on.exit(DBI::dbDisconnect(con))
+  tryCatch({
+    query <- if (include_output) {
+      "SELECT * FROM events ORDER BY timestamp"
+    } else {
+      "SELECT id, timestamp, event_type, file_path, callback_timestamp
+       FROM events
+       ORDER BY timestamp"
+    }
 
-  if (include_output) {
-    DBI::dbGetQuery(con, "SELECT * FROM events ORDER BY timestamp")
-  } else {
-    DBI::dbGetQuery(con, "
-      SELECT id, timestamp, event_type, file_path, callback_timestamp
-      FROM events
-      ORDER BY timestamp")
-  }
+    DBI::dbGetQuery(con, query)
+  }, finally = {
+    DBI::dbDisconnect(con)
+  })
 }
 
 #' Clean up a watcher database
@@ -133,22 +143,21 @@ cleanup_watcher_database <- function(db_path, force = FALSE) {
     return(FALSE)
   }
 
-  # Update status
-  con <- DBI::dbConnect(RSQLite::SQLite(), db_path)
-  on.exit(DBI::dbDisconnect(con))
-
-  DBI::dbExecute(con,
-                 sprintf(
-                   "INSERT OR REPLACE INTO status (key, value) VALUES ('state', %s)",
-                   escape_sql_string("stopped")
-                 )
-  )
-
-  # Close connection and remove file
-  DBI::dbDisconnect(con)
-  fs::file_delete(db_path)
-
-  TRUE
+  # Try to delete the database file with one retry
+  tryCatch({
+    fs::file_delete(db_path)
+    TRUE
+  }, error = function(e) {
+    # Wait and retry once
+    Sys.sleep(0.5)
+    tryCatch({
+      fs::file_delete(db_path)
+      TRUE
+    }, error = function(e) {
+      cli::cli_warn("Failed to delete database file: {db_path}")
+      FALSE
+    })
+  })
 }
 
 #' List all watcher databases
@@ -169,21 +178,4 @@ list_watcher_databases <- function(include_stopped = FALSE) {
   }
 
   db_files
-}
-
-#' Check if watcher database exists and is active
-#'
-#' @param id Watcher identifier
-#' @return Logical indicating if watcher is active
-#' @keywords internal
-is_watcher_active <- function(id) {
-  checkmate::assert_string(id)
-
-  db_path <- fs::path(get_vigil_dir(), sprintf("watcher_%s.db", id))
-  if (!fs::file_exists(db_path)) {
-    return(FALSE)
-  }
-
-  process <- get_watcher_process(db_path)
-  !is.na(process$pid) && process$state == "running"
 }

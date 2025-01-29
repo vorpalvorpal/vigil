@@ -9,6 +9,9 @@ kill_all_watchers(timeout = 5)
 \arguments{
 \item{timeout}{Timeout in seconds for each kill operation}
 }
+\value{
+Logical vector indicating success/failure for each watcher
+}
 \description{
 Kill all file watchers
 }

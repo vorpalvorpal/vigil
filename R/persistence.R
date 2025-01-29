@@ -36,7 +36,9 @@ register_persistent <- function(id) {
   }
 
   # Get watcher script path
-  watcher_script <- get_watcher_script()
+  watcher_script <- get_script_path(
+    if (.Platform$OS.type == "windows") "watch-files.vbs" else "watch-files.sh"
+  )
 
   # Platform-specific registration
   success <- if (.Platform$OS.type == "windows") {
@@ -83,18 +85,27 @@ verify_persistent_windows <- function(id) {
   }
 
   task_name <- sprintf("vigil_watcher_%s", id)
-  tasks <- taskscheduleR::taskscheduler_ls()
 
-  if (length(tasks) == 0) {
-    return(FALSE)
-  }
+  tryCatch({
+    tasks <- taskscheduleR::taskscheduler_ls()
+    if (length(tasks) == 0) {
+      return(FALSE)
+    }
 
-  task_info <- tasks[tasks$TaskName == task_name, ]
-  if (nrow(task_info) == 0) {
-    return(FALSE)
-  }
+    task_info <- tasks[tasks$TaskName == task_name, ]
+    if (nrow(task_info) == 0) {
+      return(FALSE)
+    }
 
-  task_info$Status == "Running"
+    task_info$Status == "Running"
+  }, error = function(e) {
+    cli::cli_warn(c(
+      "Failed to verify Windows task status",
+      "x" = e$message,
+      "i" = "Check Task Scheduler permissions"
+    ))
+    FALSE
+  })
 }
 
 register_persistent_windows <- function(id, db_path, watcher_script) {
@@ -123,7 +134,8 @@ register_persistent_windows <- function(id, db_path, watcher_script) {
   }, error = function(e) {
     cli::cli_warn(c(
       "Failed to register Windows task",
-      "x" = e$message
+      "x" = e$message,
+      "i" = "Check Task Scheduler permissions"
     ))
     FALSE
   })
@@ -142,7 +154,8 @@ unregister_persistent_windows <- function(id) {
   }, error = function(e) {
     cli::cli_warn(c(
       "Failed to unregister Windows task",
-      "x" = e$message
+      "x" = e$message,
+      "i" = "Check Task Scheduler permissions"
     ))
     FALSE
   })
@@ -151,6 +164,7 @@ unregister_persistent_windows <- function(id) {
 # Linux implementation -----------------------------------------------------
 
 verify_persistent_linux <- function(id) {
+  checkmate::assert_string(id)
   service_name <- sprintf("vigil-watcher-%s.service", id)
 
   tryCatch({
@@ -162,11 +176,17 @@ verify_persistent_linux <- function(id) {
     )
     identical(status, "active")
   }, error = function(e) {
+    cli::cli_warn(c(
+      "Failed to verify systemd service status",
+      "x" = e$message,
+      "i" = "Check if systemd is running: 'systemctl --user status'"
+    ))
     FALSE
   })
 }
 
 register_persistent_linux <- function(id, db_path, watcher_script) {
+  checkmate::assert_string(id)
   service_name <- sprintf("vigil-watcher-%s.service", id)
   service_path <- fs::path("~/.config/systemd/user", service_name)
 
@@ -192,24 +212,55 @@ WantedBy=default.target",
 
   tryCatch({
     # Ensure systemd user directory exists
-    fs::dir_create(fs::path_dir(service_path))
+    service_dir <- fs::path_dir(service_path)
+    if (!fs::dir_exists(service_dir)) {
+      fs::dir_create(service_dir)
+    }
+
+    # Check write permissions
+    if (!fs::file_access(service_dir, mode = "write")) {
+      cli::cli_abort(c(
+        "Cannot write to systemd user directory",
+        "x" = "No write permission for {.path {service_dir}}",
+        "i" = "Check directory permissions and ownership"
+      ))
+    }
+
     writeLines(service_content, service_path)
 
-    # Enable and start service
-    system2("systemctl", c("--user", "daemon-reload"))
-    system2("systemctl", c("--user", "enable", service_name))
-    system2("systemctl", c("--user", "start", service_name))
+    # Enable and start service with error checking
+    result <- system2("systemctl", c("--user", "daemon-reload"),
+                      stdout = TRUE, stderr = TRUE)
+    if (result != 0) {
+      cli::cli_abort("Failed to reload systemd configuration")
+    }
+
+    result <- system2("systemctl", c("--user", "enable", service_name),
+                      stdout = TRUE, stderr = TRUE)
+    if (result != 0) {
+      cli::cli_abort("Failed to enable systemd service")
+    }
+
+    result <- system2("systemctl", c("--user", "start", service_name),
+                      stdout = TRUE, stderr = TRUE)
+    if (result != 0) {
+      cli::cli_abort("Failed to start systemd service")
+    }
 
     # Verify service started
     if (!verify_persistent_linux(id)) {
-      cli::cli_abort("Service failed to start")
+      cli::cli_abort(c(
+        "Service failed to start",
+        "i" = "Check service logs with: systemctl --user status {service_name}"
+      ))
     }
 
     TRUE
   }, error = function(e) {
     cli::cli_warn(c(
       "Failed to register Linux service",
-      "x" = e$message
+      "x" = e$message,
+      "i" = "Check systemd user service configuration"
     ))
     FALSE
   })
@@ -221,8 +272,10 @@ unregister_persistent_linux <- function(id) {
 
   tryCatch({
     # Stop and disable service
-    system2("systemctl", c("--user", "stop", service_name))
-    system2("systemctl", c("--user", "disable", service_name))
+    system2("systemctl", c("--user", "stop", service_name),
+            stdout = TRUE, stderr = TRUE)
+    system2("systemctl", c("--user", "disable", service_name),
+            stdout = TRUE, stderr = TRUE)
 
     # Remove service file
     if (fs::file_exists(service_path)) {
@@ -230,13 +283,15 @@ unregister_persistent_linux <- function(id) {
     }
 
     # Reload systemd
-    system2("systemctl", c("--user", "daemon-reload"))
+    system2("systemctl", c("--user", "daemon-reload"),
+            stdout = TRUE, stderr = TRUE)
 
     TRUE
   }, error = function(e) {
     cli::cli_warn(c(
       "Failed to unregister Linux service",
-      "x" = e$message
+      "x" = e$message,
+      "i" = "Check systemd user service status"
     ))
     FALSE
   })
@@ -254,9 +309,13 @@ verify_persistent_macos <- function(id) {
       stdout = TRUE,
       stderr = TRUE
     )
-    # launchctl list returns 0 if service exists and is running
     attr(result, "status") == 0
   }, error = function(e) {
+    cli::cli_warn(c(
+      "Failed to verify launchd agent status",
+      "x" = e$message,
+      "i" = "Check if launchd is running"
+    ))
     FALSE
   })
 }
@@ -308,22 +367,43 @@ register_persistent_macos <- function(id, db_path, watcher_script) {
 
   tryCatch({
     # Write plist
-    fs::dir_create(fs::path_dir(plist_path))
+    agent_dir <- fs::path_dir(plist_path)
+    if (!fs::dir_exists(agent_dir)) {
+      fs::dir_create(agent_dir)
+    }
+
+    # Check write permissions
+    if (!fs::file_access(agent_dir, mode = "write")) {
+      cli::cli_abort(c(
+        "Cannot write to LaunchAgents directory",
+        "x" = "No write permission for {.path {agent_dir}}",
+        "i" = "Check directory permissions and ownership"
+      ))
+    }
+
     writeLines(plist_content, plist_path)
 
     # Load agent
-    system2("launchctl", c("load", "-w", plist_path))
+    result <- system2("launchctl", c("load", "-w", plist_path),
+                      stdout = TRUE, stderr = TRUE)
+    if (result != 0) {
+      cli::cli_abort("Failed to load launchd agent")
+    }
 
     # Verify agent started
     if (!verify_persistent_macos(id)) {
-      cli::cli_abort("Agent failed to start")
+      cli::cli_abort(c(
+        "Agent failed to start",
+        "i" = "Check logs in {.path {get_vigil_dir()}}"
+      ))
     }
 
     TRUE
   }, error = function(e) {
     cli::cli_warn(c(
       "Failed to register macOS agent",
-      "x" = e$message
+      "x" = e$message,
+      "i" = "Check launchd configuration"
     ))
     FALSE
   })
@@ -338,7 +418,8 @@ unregister_persistent_macos <- function(id) {
 
   tryCatch({
     # Unload agent
-    system2("launchctl", c("unload", "-w", plist_path))
+    system2("launchctl", c("unload", "-w", plist_path),
+            stdout = TRUE, stderr = TRUE)
 
     # Remove plist file
     if (fs::file_exists(plist_path)) {
@@ -361,7 +442,8 @@ unregister_persistent_macos <- function(id) {
   }, error = function(e) {
     cli::cli_warn(c(
       "Failed to unregister macOS agent",
-      "x" = e$message
+      "x" = e$message,
+      "i" = "Check launchd status"
     ))
     FALSE
   })

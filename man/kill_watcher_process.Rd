@@ -2,7 +2,7 @@
 % Please edit documentation in R/process_management.R
 \name{kill_watcher_process}
 \alias{kill_watcher_process}
-\title{Kill a watcher process}
+\title{Kill a watcher process and cleanup resources}
 \usage{
 kill_watcher_process(db_path, timeout = 5)
 }
@@ -15,6 +15,6 @@ kill_watcher_process(db_path, timeout = 5)
 Boolean indicating success
 }
 \description{
-Kill a watcher process
+Kill a watcher process and cleanup resources
 }
 \keyword{internal}
