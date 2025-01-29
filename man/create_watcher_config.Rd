@@ -10,7 +10,9 @@ create_watcher_config(
   recursive = FALSE,
   callback = NULL,
   watch_mode = "continuous",
-  change_type = "any"
+  change_type = "any",
+  wait_for_event = FALSE,
+  timeout = NULL
 )
 }
 \description{
