@@ -245,3 +245,34 @@ kill_all_watchers <- function(timeout = 5) {
 
   invisible(results)
 }
+
+#' Create standardized watcher configuration
+#' @keywords internal
+create_watcher_config <- function(path,
+                                  file_pattern = NULL,
+                                  recursive = FALSE,
+                                  callback = NULL,
+                                  watch_mode = "continuous",
+                                  change_type = "any",
+                                  wait_for_event = FALSE,
+                                  timeout = NULL) {
+  # Generate unique ID
+  id <- uuid::UUIDgenerate()
+  # Create temporary database to validate callback
+  db_path <- fs::path(get_vigil_dir(), sprintf("watcher_%s.db", id))
+  # Process callback with database storage
+  validated_callback <- validate_callback(callback, db_path)
+  # Build config
+  list(
+    id = id,
+    path = fs::path_norm(path),
+    file_pattern = file_pattern,
+    recursive = recursive,
+    watch_mode = watch_mode,
+    change_type = change_type,
+    created = format_sql_timestamp(),
+    persistent = watch_mode == "persistent",
+    wait_for_event = wait_for_event,
+    timeout = timeout
+  )
+}
