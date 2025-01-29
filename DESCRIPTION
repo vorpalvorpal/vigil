@@ -6,9 +6,9 @@ Authors@R:
            email = "vorpalvorpal@users.noreply.github.com",
            role = c("aut", "cre"))
 Description: Provides a unified interface for file system watching across Windows
-    and Unix-like systems. Supports pattern matching, custom callbacks, and
-    persistent watchers through native system services including Windows Task
-    Scheduler, systemd, and launchd.
+    and Unix-like systems. Uses SQLite for robust event tracking and supports 
+    pattern matching, custom callbacks, and persistent watchers through native
+    system services including Windows Task Scheduler, systemd, and launchd.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
@@ -23,7 +23,9 @@ Imports:
     tibble (>= 3.0.0),
     stringr (>= 1.5.0),
     sys (>= 3.4.0),
-    dplyr (>= 1.1.0)
+    dplyr (>= 1.1.0),
+    DBI (>= 1.1.0),
+    RSQLite (>= 2.2.0)
 Suggests:
     testthat (>= 3.0.0),
     knitr,
@@ -31,9 +33,13 @@ Suggests:
     processx,
     withr,
     future,
-    taskscheduleR
+    taskscheduleR,
+    odbc
 Config/testthat/edition: 3
 VignetteBuilder: knitr
 URL: https://github.com/vorpalvorpal/vigil
 BugReports: https://github.com/vorpalvorpal/vigil/issues
-SystemRequirements: On Linux: inotify-tools. On macOS: fswatch. On Windows: taskscheduleR.
+SystemRequirements: 
+    On Linux: inotify-tools, sqlite3, systemd
+    On macOS: fswatch, sqlite3
+    On Windows: SQLite ODBC Driver (recommended)

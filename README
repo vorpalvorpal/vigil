@@ -1,16 +1,38 @@
+# vigil: Cross-Platform File System Watching for R
+
+The vigil package provides a unified interface for file system watching across Windows and Unix-like systems. It uses SQLite for robust event tracking and supports pattern matching, custom callbacks, and persistent watchers through native system services.
+
+## Features
+
+* Cross-platform file system watching
+* Pattern matching with regular expressions
+* Custom R callbacks for file events
+* Persistent watchers that survive R session restarts
+* Robust event tracking via SQLite
+* Service integration (Task Scheduler, systemd, launchd)
+
+## Installation
+
+```r
+# Install from GitHub:
+remotes::install_github("vorpalvorpal/vigil")
+```
+
 ## Platform-Specific Requirements
 
-The vigil package has different requirements depending on your operating system:
+The package has different requirements depending on your operating system:
 
 ### Windows
-- Basic file watching: No additional requirements
-- Persistent watchers: Requires the `taskscheduleR` package
+* Basic file watching: No additional requirements
+* SQLite ODBC Driver: Recommended but not required
+  * Download from: http://www.ch-werner.de/sqliteodbc/
+* Persistent watchers: Requires the taskscheduleR package
   ```r
   install.packages("taskscheduleR")
   ```
 
 ### Linux
-- Requires inotify-tools:
+* inotify-tools:
   ```bash
   # Ubuntu/Debian
   sudo apt-get install inotify-tools
@@ -21,11 +43,79 @@ The vigil package has different requirements depending on your operating system:
   # Arch Linux
   sudo pacman -S inotify-tools
   ```
+* sqlite3:
+  ```bash
+  sudo apt-get install sqlite3  # or equivalent
+  ```
+* systemd (included in most distributions)
 
 ### macOS
-- Requires fswatch:
+* fswatch:
   ```bash
   brew install fswatch
   ```
+* sqlite3:
+  ```bash
+  brew install sqlite3
+  ```
 
-The package will automatically check for these requirements and provide helpful error messages if anything is missing.
+## Usage
+
+### Basic Watching
+
+```r
+library(vigil)
+
+# Watch a directory for any changes
+watch("path/to/watch")
+
+# Watch only for new files matching a pattern
+watch("path/to/watch",
+      pattern = "\\.csv$",
+      change_type = "created")
+
+# Watch with a callback
+watch("path/to/watch",
+      callback = function(event) {
+        cat(sprintf("File %s was %s at %s\n",
+                   event$file_path,
+                   event$event_type,
+                   event$timestamp))
+      })
+```
+
+### Persistent Watching
+
+```r
+# Create a watcher that continues after R exits
+watch("path/to/watch",
+      watch_mode = "persistent",
+      callback = "path/to/callback_script.R")
+
+# List active watchers
+list_watchers()
+
+# Kill a specific watcher
+kill_watcher(id)
+
+# Kill all watchers
+kill_all_watchers()
+```
+
+### Wait for Events
+
+```r
+# Wait for a specific change
+result <- watch_until("path/to/watch",
+                     pattern = "\\.txt$",
+                     change_type = "created",
+                     timeout = 60)  # timeout in seconds
+
+if (!is.null(result)) {
+  cat("New text file:", result$file_path, "\n")
+}
+```
+
+## License
+
+MIT

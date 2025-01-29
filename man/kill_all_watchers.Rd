@@ -4,11 +4,11 @@
 \alias{kill_all_watchers}
 \title{Kill all file watchers}
 \usage{
-kill_all_watchers(timeout = 10)
+kill_all_watchers(timeout = 5)
 }
 \arguments{
 \item{timeout}{Timeout in seconds for each kill operation}
 }
 \description{
-Stops all active file watchers and cleans up their resources.
+Kill all file watchers
 }

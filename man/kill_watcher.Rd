@@ -4,7 +4,7 @@
 \alias{kill_watcher}
 \title{Kill a file watcher}
 \usage{
-kill_watcher(id, timeout = 10)
+kill_watcher(id, timeout = 5)
 }
 \arguments{
 \item{id}{Watcher ID to kill}
@@ -12,8 +12,8 @@ kill_watcher(id, timeout = 10)
 \item{timeout}{Timeout in seconds for kill operation}
 }
 \value{
-Invisibly returns TRUE if successful, FALSE otherwise
+Invisibly returns TRUE if successful
 }
 \description{
-Stops a specific file watcher and cleans up associated resources.
+Kill a file watcher
 }

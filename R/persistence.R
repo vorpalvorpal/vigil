@@ -1,14 +1,80 @@
-# Windows persistence management
-
-#' Verify if a Windows persistent watcher is active
-#' @param config Watcher configuration
-#' @return Boolean indicating if watcher is active
+#' Verify if a watcher is running as a persistent service
+#'
+#' @param id Watcher identifier
+#' @return Logical indicating if service is active
 #' @keywords internal
-verify_persistent_windows <- function(config) {
-  checkmate::assert_list(config)
-  checkmate::assert_string(config$id)
+verify_persistent <- function(id) {
+  checkmate::assert_string(id)
 
-  # Check if taskscheduleR is available
+  db_path <- fs::path(get_vigil_dir(), sprintf("watcher_%s.db", id))
+  if (!fs::file_exists(db_path)) {
+    return(FALSE)
+  }
+
+  # Platform-specific verification
+  if (.Platform$OS.type == "windows") {
+    verify_persistent_windows(id)
+  } else if (Sys.info()["sysname"] == "Darwin") {
+    verify_persistent_macos(id)
+  } else {
+    verify_persistent_linux(id)
+  }
+}
+
+#' Register a watcher as a persistent service
+#'
+#' @param id Watcher identifier
+#' @return Logical indicating success
+#' @keywords internal
+register_persistent <- function(id) {
+  checkmate::assert_string(id)
+
+  # Get database path
+  db_path <- fs::path(get_vigil_dir(), sprintf("watcher_%s.db", id))
+  if (!fs::file_exists(db_path)) {
+    cli::cli_abort("Watcher database not found")
+  }
+
+  # Get watcher script path
+  watcher_script <- get_watcher_script()
+
+  # Platform-specific registration
+  success <- if (.Platform$OS.type == "windows") {
+    register_persistent_windows(id, db_path, watcher_script)
+  } else if (Sys.info()["sysname"] == "Darwin") {
+    register_persistent_macos(id, db_path, watcher_script)
+  } else {
+    register_persistent_linux(id, db_path, watcher_script)
+  }
+
+  if (!success) {
+    cli::cli_abort("Failed to register persistent watcher")
+  }
+
+  success
+}
+
+#' Unregister a persistent watcher service
+#'
+#' @param id Watcher identifier
+#' @return Logical indicating success
+#' @keywords internal
+unregister_persistent <- function(id) {
+  checkmate::assert_string(id)
+
+  # Platform-specific unregistration
+  if (.Platform$OS.type == "windows") {
+    unregister_persistent_windows(id)
+  } else if (Sys.info()["sysname"] == "Darwin") {
+    unregister_persistent_macos(id)
+  } else {
+    unregister_persistent_linux(id)
+  }
+}
+
+# Windows implementation ------------------------------------------------------
+
+verify_persistent_windows <- function(id) {
   if (!requireNamespace("taskscheduleR", quietly = TRUE)) {
     cli::cli_abort(c(
       "taskscheduleR package is required for persistent watchers on Windows",
@@ -16,36 +82,22 @@ verify_persistent_windows <- function(config) {
     ))
   }
 
-  # Task name uses the watcher ID for uniqueness
-  task_name <- sprintf("vigil_watcher_%s", config$id)
-
-  # Use taskscheduleR to check if task exists and is running
+  task_name <- sprintf("vigil_watcher_%s", id)
   tasks <- taskscheduleR::taskscheduler_ls()
 
   if (length(tasks) == 0) {
     return(FALSE)
   }
 
-  # Find our task
   task_info <- tasks[tasks$TaskName == task_name, ]
-
   if (nrow(task_info) == 0) {
     return(FALSE)
   }
 
-  # Check if task is running (Status will be "Running" if active)
   task_info$Status == "Running"
 }
 
-#' Register a Windows persistent watcher
-#' @param config Watcher configuration
-#' @return TRUE if successful
-#' @keywords internal
-register_persistent_windows <- function(config) {
-  checkmate::assert_list(config)
-  checkmate::assert_string(config$id)
-
-  # Check if taskscheduleR is available
+register_persistent_windows <- function(id, db_path, watcher_script) {
   if (!requireNamespace("taskscheduleR", quietly = TRUE)) {
     cli::cli_abort(c(
       "taskscheduleR package is required for persistent watchers on Windows",
@@ -53,137 +105,92 @@ register_persistent_windows <- function(config) {
     ))
   }
 
-  # Create a VBScript watcher as before
-  script <- create_windows_watcher_script(config)
-  script_path <- fs::path(get_vigil_dir(), sprintf("watch_%s.vbs", config$id))
+  task_name <- sprintf("vigil_watcher_%s", id)
 
   tryCatch({
-    # Write the script
-    writeLines(script, script_path)
-
-    # Create task name
-    task_name <- sprintf("vigil_watcher_%s", config$id)
-
-    # Schedule task to run the VBScript
     taskscheduleR::taskscheduler_create(
       taskname = task_name,
-      rscript = script_path,
-      schedule = "ONCE",
+      rscript = sprintf(
+        'shell("cscript //NoLogo %s %s")',
+        watcher_script,
+        db_path
+      ),
+      schedule = "ONSTART",
       starttime = format(Sys.time(), "%H:%M"),
-      startdate = format(Sys.Date(), "%d/%m/%Y"),
-      modifier = "AFTERSTART",  # Keep running after start
-      force = TRUE  # Replace if exists
+      force = TRUE
     )
-
-    TRUE
-  }, error = function(e) {
-    cli::cli_abort(c(
-      "Failed to register persistent watcher",
-      "x" = e$message
-    ))
-  })
-}
-
-#' Unregister a Windows persistent watcher
-#' @param config Watcher configuration
-#' @return TRUE if successful
-#' @keywords internal
-unregister_persistent_windows <- function(config) {
-  checkmate::assert_list(config)
-  checkmate::assert_string(config$id)
-
-  # Check if taskscheduleR is available
-  if (!requireNamespace("taskscheduleR", quietly = TRUE)) {
-    cli::cli_abort(c(
-      "taskscheduleR package is required for persistent watchers on Windows",
-      "i" = "Install taskscheduleR with: install.packages('taskscheduleR')"
-    ))
-  }
-
-  task_name <- sprintf("vigil_watcher_%s", config$id)
-
-  tryCatch({
-    # Delete the scheduled task
-    taskscheduleR::taskscheduler_delete(task_name)
-
-    # Clean up the script file
-    script_path <- fs::path(get_vigil_dir(), sprintf("watch_%s.vbs", config$id))
-    if (fs::file_exists(script_path)) {
-      fs::file_delete(script_path)
-    }
-
     TRUE
   }, error = function(e) {
     cli::cli_warn(c(
-      "Failed to unregister persistent watcher",
+      "Failed to register Windows task",
       "x" = e$message
     ))
     FALSE
   })
 }
 
-# Linux persistence management
+unregister_persistent_windows <- function(id) {
+  if (!requireNamespace("taskscheduleR", quietly = TRUE)) {
+    return(FALSE)
+  }
 
-#' Verify if a Linux persistent watcher is active
-#' @param config Watcher configuration
-#' @return Boolean indicating if watcher is active
-#' @keywords internal
-verify_persistent_linux <- function(config) {
-  checkmate::assert_list(config)
-  checkmate::assert_string(config$id)
-
-  service_name <- sprintf("vigil-watcher-%s.service", config$id)
+  task_name <- sprintf("vigil_watcher_%s", id)
 
   tryCatch({
-    status <- system2("systemctl",
-                      c("--user", "is-active", service_name),
-                      stdout = TRUE,
-                      stderr = TRUE)
+    taskscheduleR::taskscheduler_delete(task_name)
+    TRUE
+  }, error = function(e) {
+    cli::cli_warn(c(
+      "Failed to unregister Windows task",
+      "x" = e$message
+    ))
+    FALSE
+  })
+}
+
+# Linux implementation -----------------------------------------------------
+
+verify_persistent_linux <- function(id) {
+  service_name <- sprintf("vigil-watcher-%s.service", id)
+
+  tryCatch({
+    status <- system2(
+      "systemctl",
+      c("--user", "is-active", service_name),
+      stdout = TRUE,
+      stderr = TRUE
+    )
     identical(status, "active")
   }, error = function(e) {
     FALSE
   })
 }
 
-#' Register a Linux persistent watcher
-#' @param config Watcher configuration
-#' @return TRUE if successful
-#' @keywords internal
-register_persistent_linux <- function(config) {
-  checkmate::assert_list(config)
-  checkmate::assert_string(config$id)
-
-  service_name <- sprintf("vigil-watcher-%s.service", config$id)
+register_persistent_linux <- function(id, db_path, watcher_script) {
+  service_name <- sprintf("vigil-watcher-%s.service", id)
   service_path <- fs::path("~/.config/systemd/user", service_name)
 
-  # Create shell script watcher
-  script <- create_unix_watcher_script(config)
-  script_path <- fs::path(get_vigil_dir(), sprintf("watch_%s.sh", config$id))
-
-  tryCatch({
-    # Write and make executable
-    writeLines(script, script_path)
-    fs::file_chmod(script_path, "0755")
-
-    # Create systemd service file
-    service_content <- sprintf(
-      "[Unit]
+  # Create systemd service file
+  service_content <- sprintf(
+    "[Unit]
 Description=Vigil file watcher %s
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=%s
+ExecStart=%s %s
 Restart=on-failure
 Environment=HOME=%s
 
 [Install]
 WantedBy=default.target",
-      config$id,
-      script_path,
-      Sys.getenv("HOME")
-    )
+    id,
+    watcher_script,
+    db_path,
+    Sys::getenv("HOME")
+  )
 
+  tryCatch({
     # Ensure systemd user directory exists
     fs::dir_create(fs::path_dir(service_path))
     writeLines(service_content, service_path)
@@ -191,34 +198,25 @@ WantedBy=default.target",
     # Enable and start service
     system2("systemctl", c("--user", "daemon-reload"))
     system2("systemctl", c("--user", "enable", service_name))
-    result <- system2("systemctl",
-                      c("--user", "start", service_name),
-                      stdout = TRUE,
-                      stderr = TRUE)
+    system2("systemctl", c("--user", "start", service_name))
 
     # Verify service started
-    if (!verify_persistent_linux(config)) {
+    if (!verify_persistent_linux(id)) {
       cli::cli_abort("Service failed to start")
     }
 
     TRUE
   }, error = function(e) {
-    cli::cli_abort(c(
-      "Failed to register persistent watcher",
+    cli::cli_warn(c(
+      "Failed to register Linux service",
       "x" = e$message
     ))
+    FALSE
   })
 }
 
-#' Unregister a Linux persistent watcher
-#' @param config Watcher configuration
-#' @return TRUE if successful
-#' @keywords internal
-unregister_persistent_linux <- function(config) {
-  checkmate::assert_list(config)
-  checkmate::assert_string(config$id)
-
-  service_name <- sprintf("vigil-watcher-%s.service", config$id)
+unregister_persistent_linux <- function(id) {
+  service_name <- sprintf("vigil-watcher-%s.service", id)
   service_path <- fs::path("~/.config/systemd/user", service_name)
 
   tryCatch({
@@ -234,39 +232,28 @@ unregister_persistent_linux <- function(config) {
     # Reload systemd
     system2("systemctl", c("--user", "daemon-reload"))
 
-    # Clean up script
-    script_path <- fs::path(get_vigil_dir(), sprintf("watch_%s.sh", config$id))
-    if (fs::file_exists(script_path)) {
-      fs::file_delete(script_path)
-    }
-
     TRUE
   }, error = function(e) {
     cli::cli_warn(c(
-      "Failed to unregister persistent watcher",
+      "Failed to unregister Linux service",
       "x" = e$message
     ))
     FALSE
   })
 }
 
-# macOS persistence management
+# macOS implementation ---------------------------------------------------
 
-#' Verify if a macOS persistent watcher is active
-#' @param config Watcher configuration
-#' @return Boolean indicating if watcher is active
-#' @keywords internal
-verify_persistent_macos <- function(config) {
-  checkmate::assert_list(config)
-  checkmate::assert_string(config$id)
-
-  agent_label <- sprintf("com.r-lib.vigil.watcher.%s", config$id)
+verify_persistent_macos <- function(id) {
+  agent_label <- sprintf("com.r-lib.vigil.watcher.%s", id)
 
   tryCatch({
-    result <- system2("launchctl",
-                      c("list", agent_label),
-                      stdout = TRUE,
-                      stderr = TRUE)
+    result <- system2(
+      "launchctl",
+      c("list", agent_label),
+      stdout = TRUE,
+      stderr = TRUE
+    )
     # launchctl list returns 0 if service exists and is running
     attr(result, "status") == 0
   }, error = function(e) {
@@ -274,32 +261,16 @@ verify_persistent_macos <- function(config) {
   })
 }
 
-#' Register a macOS persistent watcher
-#' @param config Watcher configuration
-#' @return TRUE if successful
-#' @keywords internal
-register_persistent_macos <- function(config) {
-  checkmate::assert_list(config)
-  checkmate::assert_string(config$id)
-
-  agent_label <- sprintf("com.r-lib.vigil.watcher.%s", config$id)
+register_persistent_macos <- function(id, db_path, watcher_script) {
+  agent_label <- sprintf("com.r-lib.vigil.watcher.%s", id)
   plist_path <- fs::path(
     "~/Library/LaunchAgents",
     sprintf("%s.plist", agent_label)
   )
 
-  # Create shell script watcher
-  script <- create_unix_watcher_script(config)
-  script_path <- fs::path(get_vigil_dir(), sprintf("watch_%s.sh", config$id))
-
-  tryCatch({
-    # Write and make executable
-    writeLines(script, script_path)
-    fs::file_chmod(script_path, "0755")
-
-    # Create plist file
-    plist_content <- sprintf(
-      '<?xml version="1.0" encoding="UTF-8"?>
+  # Create plist file
+  plist_content <- sprintf(
+    '<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -307,6 +278,7 @@ register_persistent_macos <- function(config) {
     <string>%s</string>
     <key>ProgramArguments</key>
     <array>
+        <string>%s</string>
         <string>%s</string>
     </array>
     <key>KeepAlive</key>
@@ -326,13 +298,15 @@ register_persistent_macos <- function(config) {
     </dict>
 </dict>
 </plist>',
-      agent_label,
-      script_path,
-      fs::path(get_vigil_dir(), sprintf("stdout_%s.log", config$id)),
-      fs::path(get_vigil_dir(), sprintf("stderr_%s.log", config$id)),
-      Sys.getenv("HOME")
-    )
+    agent_label,
+    watcher_script,
+    db_path,
+    fs::path(get_vigil_dir(), sprintf("stdout_%s.log", id)),
+    fs::path(get_vigil_dir(), sprintf("stderr_%s.log", id)),
+    Sys::getenv("HOME")
+  )
 
+  tryCatch({
     # Write plist
     fs::dir_create(fs::path_dir(plist_path))
     writeLines(plist_content, plist_path)
@@ -341,28 +315,22 @@ register_persistent_macos <- function(config) {
     system2("launchctl", c("load", "-w", plist_path))
 
     # Verify agent started
-    if (!verify_persistent_macos(config)) {
+    if (!verify_persistent_macos(id)) {
       cli::cli_abort("Agent failed to start")
     }
 
     TRUE
   }, error = function(e) {
-    cli::cli_abort(c(
-      "Failed to register persistent watcher",
+    cli::cli_warn(c(
+      "Failed to register macOS agent",
       "x" = e$message
     ))
+    FALSE
   })
 }
 
-#' Unregister a macOS persistent watcher
-#' @param config Watcher configuration
-#' @return TRUE if successful
-#' @keywords internal
-unregister_persistent_macos <- function(config) {
-  checkmate::assert_list(config)
-  checkmate::assert_string(config$id)
-
-  agent_label <- sprintf("com.r-lib.vigil.watcher.%s", config$id)
+unregister_persistent_macos <- function(id) {
+  agent_label <- sprintf("com.r-lib.vigil.watcher.%s", id)
   plist_path <- fs::path(
     "~/Library/LaunchAgents",
     sprintf("%s.plist", agent_label)
@@ -377,11 +345,10 @@ unregister_persistent_macos <- function(config) {
       fs::file_delete(plist_path)
     }
 
-    # Clean up script and logs
+    # Clean up logs
     files_to_clean <- c(
-      fs::path(get_vigil_dir(), sprintf("watch_%s.sh", config$id)),
-      fs::path(get_vigil_dir(), sprintf("stdout_%s.log", config$id)),
-      fs::path(get_vigil_dir(), sprintf("stderr_%s.log", config$id))
+      fs::path(get_vigil_dir(), sprintf("stdout_%s.log", id)),
+      fs::path(get_vigil_dir(), sprintf("stderr_%s.log", id))
     )
 
     purrr::walk(files_to_clean, function(file) {
@@ -393,7 +360,7 @@ unregister_persistent_macos <- function(config) {
     TRUE
   }, error = function(e) {
     cli::cli_warn(c(
-      "Failed to unregister persistent watcher",
+      "Failed to unregister macOS agent",
       "x" = e$message
     ))
     FALSE

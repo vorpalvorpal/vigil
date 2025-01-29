@@ -16,25 +16,30 @@ watch(
 \arguments{
 \item{path}{Directory path to watch}
 
-\item{pattern}{Optional file pattern to match as regular expression}
+\item{pattern}{Optional file pattern to match (regex)}
 
-\item{recursive}{Whether to watch subdirectories (default: FALSE)}
+\item{recursive}{Whether to watch subdirectories}
 
 \item{callback}{Function to call when files change. Can be:
 \itemize{
-\item A function or expression
-\item A package function name (e.g. "dplyr::select")
-\item Path to an R script
-}}
-
-\item{watch_mode}{The watching mode (default: "continuous")
+\item A function or expression accepting an event list (e.g. function(event) { process_file(event$file_path) })
+\item Path to an R script that will have access to an 'event' list containing:
 \itemize{
-\item "continuous" - Watch continuously until explicitly stopped
-\item "single" - Stop after first event
-\item "persistent" - Continue watching even after R session ends
+\item id: Event identifier
+\item timestamp: When the event occurred
+\item event_type: "created", "modified", or "deleted"
+\item file_path: Full path to changed file
+}
 }}
 
-\item{change_type}{Type of changes to watch for (default: "any")
+\item{watch_mode}{The watching mode:
+\itemize{
+\item "continuous" - Watch until explicitly stopped
+\item "single" - Stop after first event
+\item "persistent" - Continue watching after R session ends
+}}
+
+\item{change_type}{Type of changes to watch for:
 \itemize{
 \item "any" - All changes
 \item "created" - File creation only
@@ -43,8 +48,39 @@ watch(
 }}
 }
 \value{
-Invisibly returns the watcher ID (character string)
+Invisibly returns the watcher ID
 }
 \description{
-Sets up a file system watcher to monitor changes in a specified directory.
+Watch directory for file changes
+}
+\examples{
+\dontrun{
+# Log file changes to a CSV
+watch("~/data",
+  callback = function(event) {
+    write.csv(
+      data.frame(
+        id = event$id,
+        time = event$timestamp,
+        file = basename(event$file_path),
+        type = event$event_type
+      ),
+      "file_changes.csv",
+      append = TRUE
+    )
+  }
+)
+
+# Process new JSON files
+watch("~/incoming",
+  pattern = "\\\\.json$",
+  change_type = "created",
+  callback = function(event) {
+    if (file.exists(event$file_path)) {  # Check file still exists
+      data <- jsonlite::read_json(event$file_path)
+      process_data(data)  # User-defined processing function
+    }
+  }
+)
+}
 }

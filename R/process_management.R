@@ -1,12 +1,12 @@
 #' Get Vigil User Directory
 #'
-#' Returns the platform-specific directory where vigil stores its configuration and
-#' temporary files.
+#' Returns the platform-specific directory where vigil stores its databases and
+#' configuration.
 #'
 #' @return Character string containing the absolute path to the vigil directory
 #' @details
-#' On Windows, files are stored in %LOCALAPPDATA%/R/vigil
-#' On Unix-like systems, files are stored in ~/.local/share/R/vigil
+#' On Windows: %LOCALAPPDATA%/R/vigil
+#' On Unix: ~/.local/share/R/vigil
 #' @keywords internal
 get_vigil_dir <- function() {
   # Determine base directory
@@ -22,10 +22,10 @@ get_vigil_dir <- function() {
     base <- "~/.local/share"
   }
 
-  # Create path
+  # Create vigil path
   path <- fs::path(base, "R", "vigil")
 
-  # Try to create directory with error handling
+  # Create directory with error handling
   tryCatch({
     fs::dir_create(path)
   }, error = function(e) {
@@ -44,43 +44,63 @@ get_vigil_dir <- function() {
     ))
   }
 
-  # Clean up old files
-  cleanup_old_files(path)
+  # Run database maintenance
+  cleanup_old_databases(path)
 
   fs::path_norm(path)
 }
 
-#' Clean up old vigil files
+#' Clean up old databases and orphaned resources
+#'
 #' @param dir Directory to clean
 #' @param max_age Maximum age in days before cleanup
 #' @keywords internal
-cleanup_old_files <- function(dir, max_age = 7) {
-  # Get all files and filter by extensions we care about
-  files <- fs::dir_ls(dir)
-  files <- files[grep("\\.(json|txt|vbs|sh)$", files)]
+cleanup_old_databases <- function(dir, max_age = 7) {
+  # Get database files
+  db_files <- fs::dir_ls(dir, glob = "watcher_*.db")
 
-  if (length(files) == 0) {
+  if (length(db_files) == 0) {
     return(invisible())
   }
 
-  # Find files older than max_age days
-  old_files <- fs::file_info(files) |>
+  # Find old databases
+  old_files <- fs::file_info(db_files) |>
     dplyr::filter(
       modification_time < (Sys.time() - max_age * 24 * 60 * 60)
     )
 
   if (nrow(old_files) > 0) {
-    # Try to clean up each file
-    purrr::walk(old_files$path, function(file) {
+    purrr::walk(old_files$path, function(db_path) {
       tryCatch({
-        # Check if file belongs to active watcher
-        if (!is_active_watcher_file(file)) {
-          fs::file_delete(file)
+        # Check if database belongs to active watcher
+        con <- DBI::dbConnect(RSQLite::SQLite(), db_path)
+        on.exit(DBI::dbDisconnect(con))
+
+        status <- DBI::dbGetQuery(
+          con,
+          "SELECT value FROM status WHERE key IN ('state', 'persistent')"
+        )
+
+        # Only clean up if inactive and non-persistent
+        if (nrow(status) > 0 &&
+            !identical(status$value[status$key == "state"], "running") &&
+            !identical(status$value[status$key == "persistent"], "true")) {
+
+          DBI::dbDisconnect(con)
+          fs::file_delete(db_path)
+
+          # Clean up associated log files
+          id <- sub("watcher_(.*)\\.db$", "\\1", basename(db_path))
+          log_files <- fs::dir_ls(
+            dir,
+            glob = sprintf("*_%s.log", id)
+          )
+          fs::file_delete(log_files)
         }
       }, error = function(e) {
         cli::cli_warn(c(
-          "Could not delete old file",
-          "!" = "File: {.path {file}}",
+          "Could not process database for cleanup",
+          "!" = "File: {.path {db_path}}",
           "x" = e$message
         ))
       })
@@ -88,116 +108,136 @@ cleanup_old_files <- function(dir, max_age = 7) {
   }
 }
 
-#' Check if file belongs to active watcher
-#' @param file File path to check
-#' @return Boolean indicating if file belongs to active watcher
+#' Verify if a process is a valid vigil watcher
+#'
+#' @param db_path Path to watcher database
+#' @return Boolean indicating if watcher is valid and running
 #' @keywords internal
-is_active_watcher_file <- function(file) {
-  # Extract watcher ID from filename
-  id <- stringr::str_extract(
-    basename(file),
-    "(?:watcher|process|event)_([^_\\.]+)",
-    group = 1
-  )
+verify_watcher_process <- function(db_path) {
+  checkmate::assert_file_exists(db_path)
 
-  if (is.na(id)) {
-    return(FALSE)
-  }
+  tryCatch({
+    con <- DBI::dbConnect(RSQLite::SQLite(), db_path)
+    on.exit(DBI::dbDisconnect(con))
 
-  # Check if there's an active watcher with this ID
-  watchers <- list_watchers()
-  id %in% watchers$id
+    # Get watcher status
+    status <- DBI::dbGetQuery(
+      con,
+      "SELECT key, value FROM status WHERE key IN ('pid', 'state', 'persistent')"
+    )
+    status_list <- as.list(tibble::deframe(status))
+
+    # Check if watcher is persistent
+    if (identical(status_list$persistent, "true")) {
+      if (.Platform$OS.type == "windows") {
+        verify_persistent_windows(sub("watcher_(.*)\\.db$", "\\1", basename(db_path)))
+      } else if (Sys.info()["sysname"] == "Darwin") {
+        verify_persistent_macos(sub("watcher_(.*)\\.db$", "\\1", basename(db_path)))
+      } else {
+        verify_persistent_linux(sub("watcher_(.*)\\.db$", "\\1", basename(db_path)))
+      }
+    } else {
+      # Check regular process
+      if (is.null(status_list$pid) || status_list$state != "running") {
+        return(FALSE)
+      }
+
+      pid <- as.integer(status_list$pid)
+
+      # Platform-specific process check
+      if (.Platform$OS.type == "windows") {
+        # Check if it's a cscript.exe process running our VBS
+        cmd_info <- system2("wmic",
+                            c("process", "where", sprintf("ProcessId=%d", pid),
+                              "get", "CommandLine", "/format:csv"),
+                            stdout = TRUE)
+        any(grepl("watch-files.vbs", cmd_info, fixed = TRUE))
+      } else {
+        # On Unix, check if process exists and is a shell script
+        cmd <- system2("ps", c("-p", pid, "-o", "command="), stdout = TRUE)
+        any(grepl("watch-files.sh", cmd, fixed = TRUE))
+      }
+    }
+  }, error = function(e) {
+    cli::cli_warn(c(
+      "Error verifying watcher process",
+      "x" = e$message
+    ))
+    FALSE
+  })
 }
 
-#' Verify if a process is a vigil watcher
-#' @param pid Process ID to check
-#' @param id Watcher ID
-#' @return Boolean indicating if process is a valid vigil watcher
-#' @keywords internal
-verify_vigil_process <- function(pid, id) {
-  # Read the watcher config first
-  config_file <- fs::path(get_vigil_dir(), sprintf("watcher_%s.json", id))
-  if (!fs::file_exists(config_file)) {
-    return(FALSE)
-  }
-
-  config <- jsonlite::read_json(config_file)
-
-  # For non-persistent watchers, check process as before
-  if (.Platform$OS.type == "windows") {
-    # Check if it's a cscript.exe process running our VBS
-    cmd_info <- system2("wmic",
-                        c("process", "where", sprintf("ProcessId=%s", pid),
-                          "get", "CommandLine", "/format:csv"),
-                        stdout = TRUE)
-
-    any(grepl(sprintf("watch_%s.vbs", id), cmd_info, fixed = TRUE))
-  } else {
-    # On Unix, check if process is bash/sh running our script
-    cmd <- system2("ps", c("-p", pid, "-o", "command="), stdout = TRUE)
-    any(grepl(sprintf("watch_%s.sh", id), cmd, fixed = TRUE))
-  }
-}
-
-#' Kill a process
-#' @param pid Process ID to kill
-#' @param id Watcher ID
+#' Kill a watcher process
+#'
+#' @param db_path Path to watcher database
 #' @param timeout Timeout in seconds for kill operation
 #' @return Boolean indicating success
 #' @keywords internal
-kill_process <- function(pid, id, timeout = 10) {
-  # Validate inputs
-  checkmate::assert_string(id)
+kill_watcher_process <- function(db_path, timeout = 5) {
+  checkmate::assert_file_exists(db_path)
   checkmate::assert_number(timeout, lower = 0)
 
-  # Read the watcher config
-  config_file <- fs::path(get_vigil_dir(), sprintf("watcher_%s.json", id))
-  if (!fs::file_exists(config_file)) {
-    return(FALSE)
-  }
+  tryCatch({
+    con <- DBI::dbConnect(RSQLite::SQLite(), db_path)
+    on.exit(DBI::dbDisconnect(con))
 
-  config <- jsonlite::read_json(config_file)
+    # Get watcher status
+    status <- DBI::dbGetQuery(
+      con,
+      "SELECT key, value FROM status WHERE key IN ('pid', 'persistent')"
+    )
+    status_list <- as.list(tibble::deframe(status))
 
-  # Handle persistent watchers differently
-  if (isTRUE(config$persistent)) {
+    # Extract watcher ID from database path
+    id <- sub("watcher_(.*)\\.db$", "\\1", basename(db_path))
+
+    # Handle persistent watchers
+    if (identical(status_list$persistent, "true")) {
+      success <- if (.Platform$OS.type == "windows") {
+        unregister_persistent_windows(id)
+      } else if (Sys.info()["sysname"] == "Darwin") {
+        unregister_persistent_macos(id)
+      } else {
+        unregister_persistent_linux(id)
+      }
+
+      if (success) {
+        cleanup_watcher_resources(db_path, force = TRUE)
+      }
+
+      return(success)
+    }
+
+    # Handle regular processes
+    if (is.null(status_list$pid)) {
+      return(FALSE)
+    }
+
+    pid <- as.integer(status_list$pid)
+
+    # Platform-specific process termination
     success <- if (.Platform$OS.type == "windows") {
-      unregister_persistent_windows(config)
-    } else if (Sys.info()["sysname"] == "Darwin") {
-      unregister_persistent_macos(config)
+      kill_windows_process(pid, timeout)
     } else {
-      unregister_persistent_linux(config)
+      kill_unix_process(pid, timeout)
     }
 
     if (success) {
-      # Clean up configuration files after successful unregistration
-      cleanup_watcher_files(id, force = TRUE)
+      cleanup_watcher_resources(db_path)
     }
 
-    return(success)
-  }
-
-  # For non-persistent watchers, verify process exists
-  checkmate::assert_string(pid)
-  if (!verify_vigil_process(pid, id)) {
-    return(FALSE)
-  }
-
-  # Kill process based on platform
-  success <- if (.Platform$OS.type == "windows") {
-    kill_windows_process(pid, timeout)
-  } else {
-    kill_unix_process(pid, timeout)
-  }
-
-  # Clean up files if kill was successful
-  if (success) {
-    cleanup_watcher_files(id)
-  }
-
-  success
+    success
+  }, error = function(e) {
+    cli::cli_warn(c(
+      "Error killing watcher process",
+      "x" = e$message
+    ))
+    FALSE
+  })
 }
 
 #' Kill a Windows process
+#'
 #' @param pid Process ID to kill
 #' @param timeout Timeout in seconds
 #' @return Boolean indicating success
@@ -218,8 +258,8 @@ kill_windows_process <- function(pid, timeout) {
       return(FALSE)
     }
 
-    # Wait a short time before force kill
-    Sys.sleep(min(2, timeout - elapsed))
+    # Wait briefly before force kill
+    Sys.sleep(min(1, timeout - elapsed))
 
     success <- system2("taskkill",
                        c("/F", "/PID", pid),
@@ -231,6 +271,7 @@ kill_windows_process <- function(pid, timeout) {
 }
 
 #' Kill a Unix process
+#'
 #' @param pid Process ID to kill
 #' @param timeout Timeout in seconds
 #' @return Boolean indicating success
@@ -248,8 +289,8 @@ kill_unix_process <- function(pid, timeout) {
       return(FALSE)
     }
 
-    # Wait a short time before SIGKILL
-    Sys.sleep(min(2, timeout - elapsed))
+    # Wait briefly before SIGKILL
+    Sys.sleep(min(1, timeout - elapsed))
 
     success <- system2("kill",
                        c("-9", pid),
@@ -260,27 +301,55 @@ kill_unix_process <- function(pid, timeout) {
   success
 }
 
-#' Clean up watcher files
-#' @param id Watcher ID
-#' @param force Whether to force cleanup of persistent watcher files
+#' Clean up watcher resources
+#'
+#' @param db_path Path to watcher database
+#' @param force Whether to force cleanup of persistent watcher
 #' @keywords internal
-cleanup_watcher_files <- function(id, force = FALSE) {
-  vigil_dir <- get_vigil_dir()
+cleanup_watcher_resources <- function(db_path, force = FALSE) {
+  checkmate::assert_file_exists(db_path)
 
-  # Check if this is a persistent watcher
-  config_file <- fs::path(vigil_dir, sprintf("watcher_%s.json", id))
-  if (fs::file_exists(config_file)) {
-    config <- jsonlite::read_json(config_file)
-    if (isTRUE(config$persistent) && !force) {
-      # Don't clean up persistent watcher files unless forced
+  tryCatch({
+    con <- DBI::dbConnect(RSQLite::SQLite(), db_path)
+    on.exit(DBI::dbDisconnect(con))
+
+    # Check if this is a persistent watcher
+    status <- DBI::dbGetQuery(
+      con,
+      "SELECT value FROM status WHERE key = 'persistent'"
+    )
+
+    if (nrow(status) > 0 &&
+        identical(status$value, "true") &&
+        !force) {
       return(invisible())
     }
-  }
 
-  # Clean up all files matching the watcher ID
-  files <- fs::dir_ls(
-    vigil_dir,
-    glob = sprintf("*_%s.*", id)
-  )
-  fs::file_delete(files)
+    # Update status
+    DBI::dbExecute(
+      con,
+      "INSERT OR REPLACE INTO status (key, value) VALUES ('state', 'stopped')"
+    )
+
+    # Close connection before deletion
+    DBI::dbDisconnect(con)
+
+    # Clean up database and log files
+    fs::file_delete(db_path)
+
+    id <- sub("watcher_(.*)\\.db$", "\\1", basename(db_path))
+    log_files <- fs::dir_ls(
+      fs::path_dir(db_path),
+      glob = sprintf("*_%s.log", id)
+    )
+    fs::file_delete(log_files)
+
+  }, error = function(e) {
+    cli::cli_warn(c(
+      "Error cleaning up watcher resources",
+      "x" = e$message
+    ))
+  })
+
+  invisible()
 }

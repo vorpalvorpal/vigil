@@ -1,30 +1,55 @@
 #' Watch directory for file changes
 #'
-#' Sets up a file system watcher to monitor changes in a specified directory.
-#'
 #' @param path Directory path to watch
-#' @param pattern Optional file pattern to match as regular expression
-#' @param recursive Whether to watch subdirectories (default: FALSE)
+#' @param pattern Optional file pattern to match (regex)
+#' @param recursive Whether to watch subdirectories
 #' @param callback Function to call when files change. Can be:
-#'   \itemize{
-#'     \item A function or expression
-#'     \item A package function name (e.g. "dplyr::select")
-#'     \item Path to an R script
+#'   * A function or expression accepting an event list (e.g. function(event) { process_file(event$file_path) })
+#'   * Path to an R script that will have access to an 'event' list containing:
+#'     - id: Event identifier
+#'     - timestamp: When the event occurred
+#'     - event_type: "created", "modified", or "deleted"
+#'     - file_path: Full path to changed file
+#' @param watch_mode The watching mode:
+#'   * "continuous" - Watch until explicitly stopped
+#'   * "single" - Stop after first event
+#'   * "persistent" - Continue watching after R session ends
+#' @param change_type Type of changes to watch for:
+#'   * "any" - All changes
+#'   * "created" - File creation only
+#'   * "modified" - File modification only
+#'   * "deleted" - File deletion only
+#' @return Invisibly returns the watcher ID
+#' @examples
+#' \dontrun{
+#' # Log file changes to a CSV
+#' watch("~/data",
+#'   callback = function(event) {
+#'     write.csv(
+#'       data.frame(
+#'         id = event$id,
+#'         time = event$timestamp,
+#'         file = basename(event$file_path),
+#'         type = event$event_type
+#'       ),
+#'       "file_changes.csv",
+#'       append = TRUE
+#'     )
 #'   }
-#' @param watch_mode The watching mode (default: "continuous")
-#'   \itemize{
-#'     \item "continuous" - Watch continuously until explicitly stopped
-#'     \item "single" - Stop after first event
-#'     \item "persistent" - Continue watching even after R session ends
+#' )
+#'
+#' # Process new JSON files
+#' watch("~/incoming",
+#'   pattern = "\\.json$",
+#'   change_type = "created",
+#'   callback = function(event) {
+#'     if (file.exists(event$file_path)) {  # Check file still exists
+#'       data <- jsonlite::read_json(event$file_path)
+#'       process_data(data)  # User-defined processing function
+#'     }
 #'   }
-#' @param change_type Type of changes to watch for (default: "any")
-#'   \itemize{
-#'     \item "any" - All changes
-#'     \item "created" - File creation only
-#'     \item "modified" - File modification only
-#'     \item "deleted" - File deletion only
-#'   }
-#' @return Invisibly returns the watcher ID (character string)
+#' )
+#' }
 #' @export
 watch <- function(path,
                   pattern = NULL,
@@ -35,77 +60,36 @@ watch <- function(path,
 
   # Check platform requirements
   check_platform_requirements()
-
-  # If persistent mode, check additional requirements
   if (watch_mode == "persistent") {
     check_persistent_requirements()
   }
 
-  # Validate inputs
+  # Basic input validation
   checkmate::assert_directory_exists(path)
   if (!is.null(pattern)) {
     checkmate::assert_string(pattern)
     # Verify it's a valid regex
     tryCatch(
       grepl(pattern, "test string"),
-      error = function(e) cli::cli_abort(c(
-        "Invalid regular expression pattern",
-        "x" = e$message
-      ))
+      error = function(e) cli::cli_abort("Invalid regular expression pattern")
     )
   }
   checkmate::assert_flag(recursive)
   checkmate::assert_choice(watch_mode, c("single", "continuous", "persistent"))
   checkmate::assert_choice(change_type, c("created", "modified", "deleted", "any"))
 
-  # Create unique ID for this watcher
-  id <- uuid::UUIDgenerate()
-
-  # Validate and process callback
-  validated_callback <- validate_callback(callback)
-
-  # Create config
-  config <- list(
-    id = id,
-    path = fs::path_norm(path),
+  # Create watcher config
+  config <- create_watcher_config(
+    path = path,
     pattern = pattern,
     recursive = recursive,
-    callback = validated_callback,
+    callback = callback,
     watch_mode = watch_mode,
-    change_type = change_type,
-    created = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
-    persistent = watch_mode == "persistent"
+    change_type = change_type
   )
 
-  # Write config file
-  config_file <- fs::path(get_vigil_dir(), sprintf("watcher_%s.json", id))
-  jsonlite::write_json(config, config_file, auto_unbox = TRUE)
-
-  # Launch watcher based on mode and platform
-  tryCatch({
-    if (watch_mode == "persistent") {
-      if (.Platform$OS.type == "windows") {
-        register_persistent_windows(config)
-      } else if (Sys.info()["sysname"] == "Darwin") {
-        register_persistent_macos(config)
-      } else {
-        register_persistent_linux(config)
-      }
-    } else {
-      if (.Platform$OS.type == "windows") {
-        watch_files_windows(config)
-      } else {
-        watch_files_unix(config)
-      }
-    }
-  }, error = function(e) {
-    # Clean up on error
-    cleanup_watcher_files(id, force = TRUE)
-    cli::cli_abort(c(
-      "Failed to start watcher",
-      "x" = e$message
-    ))
-  })
+  # Start watcher process
+  pid <- start_watcher(config)
 
   # Build descriptive messages
   change_msg <- switch(change_type,
@@ -126,29 +110,57 @@ watch <- function(path,
     "i" = "Watcher will continue {duration_msg}."
   ))
 
-  invisible(id)
+  invisible(config$id)
+}
+
+#' Create standardized watcher configuration
+#' @keywords internal
+create_watcher_config <- function(path,
+                                  pattern = NULL,
+                                  recursive = FALSE,
+                                  callback = NULL,
+                                  watch_mode = "continuous",
+                                  change_type = "any") {
+
+  # Generate unique ID
+  id <- uuid::UUIDgenerate()
+
+  # Create temporary database to validate callback
+  db_path <- fs::path(get_vigil_dir(), sprintf("watcher_%s.db", id))
+
+  # Process callback with database storage
+  validated_callback <- validate_callback(callback, db_path)
+
+  # Build config
+  list(
+    id = id,
+    path = fs::path_norm(path),
+    pattern = pattern,
+    recursive = recursive,
+    watch_mode = watch_mode,
+    change_type = change_type,
+    created = format_sql_timestamp(),
+    persistent = watch_mode == "persistent"
+  )
 }
 
 #' List active file watchers
 #'
 #' Returns information about all currently active file watchers.
 #'
-#' @return tibble with columns:
-#'   \describe{
-#'     \item{id}{Watcher identifier}
-#'     \item{path}{Directory being watched}
-#'     \item{pattern}{File pattern (NA if none)}
-#'     \item{recursive}{Whether watching subdirectories}
-#'     \item{persistent}{Whether watcher is persistent}
-#'     \item{created}{When watcher was created}
-#'   }
+#' @return Tibble with columns:
+#'   * id - Watcher identifier
+#'   * path - Directory being watched
+#'   * pattern - File pattern (NA if none)
+#'   * recursive - Whether watching subdirectories
+#'   * persistent - Whether watcher is persistent
+#'   * created - When watcher was created
 #' @export
 list_watchers <- function() {
-  # List all watcher config files
-  vigil_dir <- get_vigil_dir()
-  config_files <- fs::dir_ls(vigil_dir, glob = "watcher_*.json")
+  # List active databases
+  databases <- list_watcher_databases(include_stopped = FALSE)
 
-  if (length(config_files) == 0) {
+  if (length(databases) == 0) {
     return(tibble::tibble(
       id = character(),
       path = character(),
@@ -159,51 +171,16 @@ list_watchers <- function() {
     ))
   }
 
-  # Read configs and check if processes still exist
-  purrr::map_dfr(config_files, function(file) {
-    config <- jsonlite::read_json(file)
+  # Extract info from each database
+  purrr::map_dfr(databases, function(db_path) {
+    config <- read_watcher_config(db_path)
 
-    # For persistent watchers, check if they're still registered
-    if (isTRUE(config$persistent)) {
-      is_active <- if (.Platform$OS.type == "windows") {
-        verify_persistent_windows(config)
-      } else if (Sys.info()["sysname"] == "Darwin") {
-        verify_persistent_macos(config)
-      } else {
-        verify_persistent_linux(config)
-      }
-
-      if (!is_active) {
-        # Clean up dead persistent watcher
-        cleanup_watcher_files(config$id, force = TRUE)
-        return(NULL)
-      }
-    } else {
-      # Check regular watcher process
-      process_file <- fs::path(vigil_dir, sprintf("process_%s.txt", config$id))
-
-      if (fs::file_exists(process_file)) {
-        process_info <- readLines(process_file)
-        pid <- strsplit(process_info, " ")[[1]][1]
-
-        if (!verify_vigil_process(pid, config$id)) {
-          # Clean up dead watcher
-          cleanup_watcher_files(config$id)
-          return(NULL)
-        }
-      } else {
-        cleanup_watcher_files(config$id)
-        return(NULL)
-      }
-    }
-
-    # Return watcher info
     tibble::tibble(
       id = config$id,
       path = config$path,
       pattern = if (is.null(config$pattern)) NA_character_ else config$pattern,
-      recursive = config$recursive,
-      persistent = isTRUE(config$persistent),
+      recursive = as.logical(config$recursive),
+      persistent = as.logical(config$persistent),
       created = config$created
     )
   })
@@ -216,22 +193,15 @@ list_watchers <- function() {
 #'
 #' @param path Directory path to watch
 #' @param pattern Optional file pattern to match (regex)
-#' @param change_type Type of change to watch for: "created", "modified",
-#'   "deleted", or "any" (default: "any")
-#' @param timeout Timeout in seconds. NULL means wait indefinitely
-#' @return tibble with columns:
-#'   \describe{
-#'     \item{path}{Full path to changed file}
-#'     \item{name}{File name}
-#'     \item{change_type}{Type of change detected}
-#'     \item{timestamp}{When change occurred}
-#'   }
-#'   Returns NULL if timeout is reached before any changes
+#' @param change_type Type of change to watch for
+#' @param timeout Timeout in seconds (NULL means wait indefinitely)
+#' @return Tibble with event details or NULL if timeout
 #' @export
 watch_until <- function(path,
                         pattern = NULL,
                         change_type = "any",
                         timeout = NULL) {
+
   checkmate::assert_directory_exists(path)
   if (!is.null(pattern)) {
     checkmate::assert_string(pattern)
@@ -243,108 +213,62 @@ watch_until <- function(path,
   checkmate::assert_choice(change_type, c("created", "modified", "deleted", "any"))
   checkmate::assert_number(timeout, null.ok = TRUE, lower = 0)
 
-  # Create unique ID for this watcher
-  id <- uuid::UUIDgenerate()
-
-  # Create config for single-event watcher
-  config <- list(
-    id = id,
-    path = fs::path_norm(path),
+  # Create watcher config with wait_for_event flag
+  config <- create_watcher_config(
+    path = path,
     pattern = pattern,
     recursive = FALSE,
     watch_mode = "single",
     change_type = change_type,
-    no_cleanup = "true", # We'll handle cleanup ourselves
-    persistent = FALSE
+    wait_for_event = TRUE,
+    timeout = timeout
   )
 
-  # Write config file
-  config_file <- fs::path(get_vigil_dir(), sprintf("watcher_%s.json", id))
-  jsonlite::write_json(config, config_file, auto_unbox = TRUE)
+  tryCatch({
+    # Start watcher and wait for event
+    db_path <- start_watcher(config)
 
-  # Cleanup function
-  on.exit({
-    cleanup_watcher_files(id)
+    # Get events (guaranteed to exist by launcher)
+    events <- get_watcher_events(db_path)
+
+    # Clean up and return
+    cleanup_watcher_database(db_path)
+    events
+
+  }, error = function(e) {
+    if (!is.null(config$id)) {
+      cleanup_watcher_database(
+        fs::path(get_vigil_dir(), sprintf("watcher_%s.db", config$id))
+      )
+    }
+    if (grepl("Timed out", e$message)) {
+      return(NULL)
+    }
+    cli::cli_abort(c(
+      "Error waiting for events",
+      "x" = e$message
+    ))
   })
-
-  # Start platform-specific watcher process
-  if (.Platform$OS.type == "windows") {
-    # Create and run VBScript
-    script <- create_windows_watcher_script(config)
-    script_path <- fs::path(get_vigil_dir(), sprintf("watch_%s.vbs", id))
-    writeLines(script, script_path)
-
-    # Run script with timeout
-    status <- sys::exec_wait(
-      "cscript",
-      args = c("//NoLogo", script_path),
-      timeout = timeout %||% 0
-    )
-  } else {
-    # Create and run shell script
-    script <- create_unix_watcher_script(config)
-    script_path <- fs::path(get_vigil_dir(), sprintf("watch_%s.sh", id))
-    writeLines(script, script_path)
-    fs::file_chmod(script_path, "0755")
-
-    # Run script with timeout
-    status <- sys::exec_wait(
-      script_path,
-      timeout = timeout %||% 0
-    )
-  }
-
-  # Check for timeout
-  if (status == -1) {
-    return(NULL)
-  }
-
-  # Process has exited - find and read the event file
-  event_files <- fs::dir_ls(
-    get_vigil_dir(),
-    glob = sprintf("event_%s_*.json", id)
-  )
-
-  if (length(event_files) == 0) {
-    return(NULL)
-  }
-
-  # Get most recent event file
-  event_file <- event_files[which.max(fs::file_info(event_files)$modification_time)]
-  event <- jsonlite::read_json(event_file)
-
-  # Return tibble with event details
-  tibble::tibble(
-    path = event$path,
-    name = basename(event$path),
-    change_type = event$type,
-    timestamp = as.POSIXct(event$timestamp)
-  )
 }
 
 #' Kill a file watcher
 #'
-#' Stops a specific file watcher and cleans up associated resources.
-#'
 #' @param id Watcher ID to kill
 #' @param timeout Timeout in seconds for kill operation
-#' @return Invisibly returns TRUE if successful, FALSE otherwise
+#' @return Invisibly returns TRUE if successful
 #' @export
-kill_watcher <- function(id, timeout = 10) {
+kill_watcher <- function(id, timeout = 5) {
   checkmate::assert_string(id)
   checkmate::assert_number(timeout, lower = 0)
 
-  process_file <- fs::path(get_vigil_dir(), sprintf("process_%s.txt", id))
+  db_path <- fs::path(get_vigil_dir(), sprintf("watcher_%s.db", id))
 
-  if (!fs::file_exists(process_file)) {
+  if (!fs::file_exists(db_path)) {
     cli::cli_alert_warning("Watcher {.val {id}} not found")
     return(invisible(FALSE))
   }
 
-  process_info <- readLines(process_file)
-  pid <- strsplit(process_info, " ")[[1]][1]
-
-  if (kill_process(pid, id, timeout)) {
+  if (kill_watcher_process(db_path, timeout)) {
     cli::cli_alert_success("Killed watcher {.val {id}}")
     invisible(TRUE)
   } else {
@@ -355,19 +279,19 @@ kill_watcher <- function(id, timeout = 10) {
 
 #' Kill all file watchers
 #'
-#' Stops all active file watchers and cleans up their resources.
-#'
 #' @param timeout Timeout in seconds for each kill operation
 #' @export
-kill_all_watchers <- function(timeout = 10) {
+kill_all_watchers <- function(timeout = 5) {
   checkmate::assert_number(timeout, lower = 0)
 
+  # Get all active watchers
   watchers <- list_watchers()
   if (nrow(watchers) == 0) {
     cli::cli_alert_info("No active watchers found")
     return(invisible())
   }
 
+  # Kill each watcher
   results <- purrr::map_lgl(watchers$id, ~ kill_watcher(.x, timeout))
 
   successful <- sum(results)

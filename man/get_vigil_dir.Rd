@@ -10,11 +10,11 @@ get_vigil_dir()
 Character string containing the absolute path to the vigil directory
 }
 \description{
-Returns the platform-specific directory where vigil stores its configuration and
-temporary files.
+Returns the platform-specific directory where vigil stores its databases and
+configuration.
 }
 \details{
-On Windows, files are stored in \%LOCALAPPDATA\%/R/vigil
-On Unix-like systems, files are stored in ~/.local/share/R/vigil
+On Windows: \%LOCALAPPDATA\%/R/vigil
+On Unix: ~/.local/share/R/vigil
 }
 \keyword{internal}

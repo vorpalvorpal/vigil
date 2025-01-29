@@ -11,20 +11,12 @@ watch_until(path, pattern = NULL, change_type = "any", timeout = NULL)
 
 \item{pattern}{Optional file pattern to match (regex)}
 
-\item{change_type}{Type of change to watch for: "created", "modified",
-"deleted", or "any" (default: "any")}
+\item{change_type}{Type of change to watch for}
 
-\item{timeout}{Timeout in seconds. NULL means wait indefinitely}
+\item{timeout}{Timeout in seconds (NULL means wait indefinitely)}
 }
 \value{
-tibble with columns:
-\describe{
-\item{path}{Full path to changed file}
-\item{name}{File name}
-\item{change_type}{Type of change detected}
-\item{timestamp}{When change occurred}
-}
-Returns NULL if timeout is reached before any changes
+Tibble with event details or NULL if timeout
 }
 \description{
 Sets up a temporary file watcher that runs until specified changes occur or

@@ -2,31 +2,19 @@
 % Please edit documentation in R/utils.R
 \name{validate_callback}
 \alias{validate_callback}
-\title{Validate Callback}
+\title{Validate and normalize callback specifications}
 \usage{
-validate_callback(callback)
+validate_callback(callback, db_path = NULL)
 }
 \arguments{
 \item{callback}{Function, expression, package function name, or path to R script}
+
+\item{db_path}{Path to watcher database for storing callback info}
 }
 \value{
-List containing:
-\describe{
-\item{type}{One of "none", "package", "script", or "expression"}
-\item{value}{The validated callback value}
-}
+List containing validated callback info
 }
 \description{
-Validates and normalizes callback specifications for file watchers.
-}
-\examples{
-# Function callback
-validate_callback(function(x) print(x))
-
-# Package function
-validate_callback("dplyr::select")
-
-# R script
-validate_callback("~/scripts/process_file.R")
+Validate and normalize callback specifications
 }
 \keyword{internal}
