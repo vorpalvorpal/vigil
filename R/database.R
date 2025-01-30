@@ -24,27 +24,30 @@ create_watcher_database <- function(config) {
         )")
 
       DBI::dbExecute(con, "
-      CREATE TABLE events (
-        id INTEGER PRIMARY KEY,
-        timestamp TEXT NOT NULL,
-        event_type TEXT NOT NULL,
-        file_path TEXT NOT NULL,
-        callback_source TEXT,
-        callback_text TEXT,
-        callback_messages TEXT,
-        callback_warnings TEXT,
-        callback_errors TEXT,
-        callback_values TEXT,
-        callback_plots TEXT,
-        callback_timestamp TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )")
+        CREATE TABLE active_processes (
+          pid INTEGER NOT NULL,
+          type TEXT NOT NULL CHECK (type IN ('watcher', 'callback')),
+          event_id INTEGER,
+          active BOOLEAN DEFAULT TRUE,
+          start_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (pid)
+        )")
 
       DBI::dbExecute(con, "
-        CREATE TABLE status (
-          key TEXT PRIMARY KEY,
-          value TEXT,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        CREATE TABLE events (
+          id INTEGER PRIMARY KEY,
+          timestamp TEXT NOT NULL,
+          event_type TEXT NOT NULL,
+          file_path TEXT NOT NULL,
+          callback_source TEXT,
+          callback_text TEXT,
+          callback_messages TEXT,
+          callback_warnings TEXT,
+          callback_errors TEXT,
+          callback_values TEXT,
+          callback_plots TEXT,
+          callback_timestamp TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )")
 
       # Write configuration
@@ -53,15 +56,6 @@ create_watcher_database <- function(config) {
         value = vapply(config, as.character, character(1))
       )
       DBI::dbWriteTable(con, "config", config_df, append = TRUE)
-
-      # Initialize status
-      DBI::dbExecute(
-        con,
-        sprintf(
-          "INSERT INTO status (key, value) VALUES ('state', %s)",
-          escape_sql_string("initializing")
-        )
-      )
     })
   }, finally = {
     DBI::dbDisconnect(con)
@@ -87,23 +81,36 @@ read_watcher_config <- function(db_path) {
   })
 }
 
-#' Get watcher process information
+#' Get active watcher processes
 #'
 #' @param db_path Path to watcher database
-#' @return List containing process info (pid, state)
+#' @param type Optional process type filter ("watcher" or "callback")
+#' @param active_only Whether to only return active processes
+#' @return Tibble containing process info
 #' @keywords internal
-get_watcher_process <- function(db_path) {
+get_watcher_processes <- function(db_path, type = NULL, active_only = TRUE) {
   db_path <- validate_db_path(db_path)
 
   con <- DBI::dbConnect(RSQLite::SQLite(), db_path)
   tryCatch({
-    status <- DBI::dbGetQuery(con, "SELECT key, value FROM status")
-    status_list <- as.list(tibble::deframe(status))
+    query <- "SELECT * FROM active_processes"
 
-    list(
-      pid = as.integer(status_list$pid),
-      state = status_list$state
-    )
+    # Add type filter if specified
+    if (!is.null(type)) {
+      checkmate::assert_choice(type, c("watcher", "callback"))
+      query <- paste0(query, sprintf(" WHERE type = '%s'", type))
+
+      # Add active filter if requested
+      if (active_only) {
+        query <- paste0(query, " AND active = TRUE")
+      }
+    } else if (active_only) {
+      query <- paste0(query, " WHERE active = TRUE")
+    }
+
+    query <- paste0(query, " ORDER BY start_time")
+
+    DBI::dbGetQuery(con, query)
   }, finally = {
     DBI::dbDisconnect(con)
   })
@@ -176,12 +183,49 @@ list_watcher_databases <- function(include_stopped = FALSE) {
   db_files <- fs::dir_ls(vigil_dir, glob = "watcher_*.db")
 
   if (!include_stopped) {
-    # Filter out stopped watchers
+    # Filter out databases with no active watcher process
     db_files <- db_files[purrr::map_lgl(db_files, function(db) {
-      process <- get_watcher_process(db)
-      !is.na(process$pid) && process$state != "stopped"
+      processes <- get_watcher_processes(db, type = "watcher")
+      nrow(processes) > 0
     })]
   }
 
   db_files
+}
+
+#' Mark process as inactive in database
+#'
+#' @param db_path Path to watcher database
+#' @param pid Process ID to mark as inactive
+#' @return Logical indicating success
+#' @keywords internal
+mark_process_inactive <- function(db_path, pid) {
+  db_path <- validate_db_path(db_path)
+
+  con <- DBI::dbConnect(RSQLite::SQLite(), db_path)
+  tryCatch({
+    DBI::dbExecute(
+      con,
+      "UPDATE active_processes SET active = FALSE WHERE pid = ?",
+      params = list(pid)
+    ) > 0
+  }, finally = {
+    DBI::dbDisconnect(con)
+  })
+}
+
+#' Clean up inactive process records
+#'
+#' @param db_path Path to watcher database
+#' @return Number of records cleaned up
+#' @keywords internal
+cleanup_inactive_processes <- function(db_path) {
+  db_path <- validate_db_path(db_path)
+
+  con <- DBI::dbConnect(RSQLite::SQLite(), db_path)
+  tryCatch({
+    DBI::dbExecute(con, "DELETE FROM active_processes WHERE active = FALSE")
+  }, finally = {
+    DBI::dbDisconnect(con)
+  })
 }

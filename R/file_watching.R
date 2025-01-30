@@ -59,8 +59,15 @@ start_watcher <- function(config) {
     ))
   }
 
-  # Normal startup - return PID
-  as.integer(result$stdout)
+  # Get watcher process ID
+  processes <- get_watcher_processes(db_path, type = "watcher", active_only = TRUE)
+  if (nrow(processes) == 0) {
+    cleanup_watcher_database(db_path)
+    cli::cli_abort("No active watcher process found after startup")
+  }
+
+  # Return first watcher PID (there should only be one)
+  as.integer(processes$pid[1])
 }
 
 #' Convert R regex to VBScript compatible pattern

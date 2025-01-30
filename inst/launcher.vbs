@@ -1,3 +1,5 @@
+' launcher.vbs
+'
 ' Usage: cscript launcher.vbs <database_path> <watcher_script_path>
 '
 ' Returns: PID of the watcher process once it's confirmed running
@@ -65,7 +67,7 @@ End If
 Dim conn: Set conn = CreateObject("ADODB.Connection")
 conn.Open "Driver={SQLite3 ODBC Driver};Database=" & dbPath & ";"
 
-Dim rs: Set rs = conn.Execute("SELECT value FROM status WHERE key='pid' AND value IS NOT NULL")
+Dim rs: Set rs = conn.Execute("SELECT pid FROM active_processes WHERE type='watcher' AND active=TRUE LIMIT 1;")
 If Not rs.EOF Then
     ' Success - output PID and exit
     WScript.StdOut.WriteLine watcherPid

@@ -124,58 +124,33 @@ verify_watcher_process <- function(db_path) {
   id <- parse_watcher_id(db_path)
 
   tryCatch({
-    con <- DBI::dbConnect(RSQLite::SQLite(), db_path)
-    on.exit(DBI::dbDisconnect(con))
+    # Get watcher processes
+    processes <- get_watcher_processes(db_path, type = "watcher", active_only = TRUE)
 
-    # Get watcher status
-    status <- DBI::dbGetQuery(
-      con,
-      "SELECT key, value FROM status WHERE key IN ('pid', 'state', 'persistent')"
-    )
-    status_list <- as.list(tibble::deframe(status))
-
-    # Safely extract and validate PID
-    pid_str <- status_list$pid
-    if (is.null(pid_str) || is.na(pid_str)) {
+    if (nrow(processes) == 0) {
       return(FALSE)
     }
 
-    pid <- suppressWarnings(as.integer(pid_str))
-    if (is.na(pid) || pid <= 0) {
-      cli::cli_warn("Invalid process ID found in database: {pid_str}")
-      return(FALSE)
-    }
-
-    # Check if watcher is persistent
-    if (identical(status_list$persistent, "true")) {
-      if (.Platform$OS.type == "windows") {
-        verify_persistent_windows(id)
-      } else if (Sys.info()["sysname"] == "Darwin") {
-        verify_persistent_macos(id)
-      } else {
-        verify_persistent_linux(id)
-      }
-    } else {
-      # Check regular process
-      if (status_list$state != "running") {
-        return(FALSE)
-      }
-
+    # For each watcher process, verify it's running
+    running_processes <- processes$pid[purrr::map_lgl(processes$pid, function(pid) {
       # Platform-specific process verification
       if (.Platform$OS.type == "windows") {
         verify_windows_process(pid, id)
       } else {
         verify_unix_process(pid, id)
       }
-    }
+    })]
+
+    length(running_processes) > 0
   }, error = function(e) {
     cli::cli_warn(c(
       "Error verifying watcher process",
       "x" = e$message
     ))
-    return(FALSE)
+    FALSE
   })
 }
+
 
 #' Verify Windows process is a valid watcher
 #'

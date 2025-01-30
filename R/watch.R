@@ -189,63 +189,6 @@ watch_until <- function(path,
   })
 }
 
-#' Kill a file watcher
-#'
-#' @param id Watcher ID to kill
-#' @param timeout Timeout in seconds for kill operation
-#' @return Logical indicating if watcher was successfully killed
-#' @export
-kill_watcher <- function(id, timeout = 5) {
-  checkmate::assert_string(id)
-  checkmate::assert_number(timeout, lower = 0)
-
-  db_path <- fs::path(get_vigil_dir(), sprintf("watcher_%s.db", id))
-
-  if (!fs::file_exists(db_path)) {
-    cli::cli_alert_warning("Watcher {.val {id}} not found")
-    return(FALSE)
-  }
-
-  success <- kill_watcher_process(db_path, timeout)
-  if (success) {
-    cli::cli_alert_success("Killed watcher {.val {id}}")
-  } else {
-    cli::cli_alert_warning("Failed to kill watcher {.val {id}}")
-  }
-
-  success
-}
-
-#' Kill all file watchers
-#'
-#' @param timeout Timeout in seconds for each kill operation
-#' @return Logical vector indicating success/failure for each watcher
-#' @export
-kill_all_watchers <- function(timeout = 5) {
-  checkmate::assert_number(timeout, lower = 0)
-
-  # Get all active watchers
-  watchers <- list_watchers()
-  if (nrow(watchers) == 0) {
-    cli::cli_alert_info("No active watchers found")
-    return(invisible(logical(0)))
-  }
-
-  # Kill each watcher
-  results <- purrr::map_lgl(watchers$id, ~ kill_watcher(.x, timeout))
-
-  successful <- sum(results)
-  total <- length(results)
-
-  if (successful == total) {
-    cli::cli_alert_success("Successfully killed all {total} watchers")
-  } else {
-    cli::cli_alert_warning("Killed {successful} out of {total} watchers")
-  }
-
-  invisible(results)
-}
-
 #' Create standardized watcher configuration
 #' @keywords internal
 create_watcher_config <- function(path,

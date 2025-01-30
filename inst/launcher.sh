@@ -1,4 +1,5 @@
 #!/bin/bash
+# launcher.sh
 
 # Usage: ./launcher.sh <database_path> <watcher_script_path> [--wait-for-event]
 #
@@ -47,7 +48,7 @@ STATUS=$?
 
 if [ $STATUS -eq 0 ]; then
     # Check if watcher process wrote its PID to database
-    if sqlite3 "$DB_PATH" "SELECT value FROM status WHERE key='pid' AND value IS NOT NULL" >/dev/null 2>&1; then
+    if sqlite3 "$DB_PATH" "SELECT pid FROM active_processes WHERE type='watcher' AND active=TRUE LIMIT 1;" >/dev/null 2>&1; then
         if [ "$WAIT_FOR_EVENT" = "--wait-for-event" ]; then
             # Keep watching for first event
             while true; do
@@ -55,8 +56,9 @@ if [ $STATUS -eq 0 ]; then
                 if [ "$EVENT_COUNT" -gt 0 ]; then
                     exit 2
                 fi
-                # Check if watcher is still running
-                if ! kill -0 $WATCHER_PID 2>/dev/null; then
+                # Check if watcher is still running and active
+                ACTIVE_PID=$(sqlite3 "$DB_PATH" "SELECT pid FROM active_processes WHERE type='watcher' AND active=TRUE LIMIT 1;")
+                if [ -z "$ACTIVE_PID" ] || ! kill -0 $ACTIVE_PID 2>/dev/null; then
                     exit 1
                 fi
                 sleep 0.1

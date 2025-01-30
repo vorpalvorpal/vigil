@@ -1,7 +1,3 @@
-' Usage: cscript watch_files.vbs <database_path>
-'
-' Watches files according to configuration in SQLite database and logs events
-
 Option Explicit
 
 ' Check arguments
@@ -19,37 +15,79 @@ If Not fso.FileExists(dbPath) Then
     WScript.Quit 1
 End If
 
-' Setup database access - try ODBC first, fall back to R wrapper
+' Flag for ODBC vs R wrapper usage
 Dim useODBC: useODBC = True
-Dim conn: Set conn = Nothing
 
-Function InitializeDatabase()
+' Test database connection method
+Function TestDatabaseAccess()
     On Error Resume Next
-    Set conn = CreateObject("ADODB.Connection")
-    conn.Open "Driver={SQLite3 ODBC Driver};Database=" & dbPath & ";"
+    Dim testConn: Set testConn = CreateObject("ADODB.Connection")
+    testConn.Open "Driver={SQLite3 ODBC Driver};Database=" & dbPath & ";"
 
     If Err.Number <> 0 Then
         ' Try alternate driver name
         Err.Clear
-        conn.Open "Driver={SQLite ODBC Driver};Database=" & dbPath & ";"
+        testConn.Open "Driver={SQLite ODBC Driver};Database=" & dbPath & ";"
     End If
 
     If Err.Number <> 0 Then
         useODBC = False
-        Set conn = Nothing
+    Else
+        testConn.Close
     End If
+    Set testConn = Nothing
     On Error Goto 0
 End Function
 
 ' Function to execute SQL using either ODBC or R wrapper
 Function ExecuteSQL(sql)
+    ' First check if database still exists
+    If Not fso.FileExists(dbPath) Then
+        ExecuteSQL = ""
+        Exit Function
+    End If
+
     If useODBC Then
-        Dim rs: Set rs = conn.Execute(sql)
-        If Not rs.EOF Then
-            ExecuteSQL = rs.Fields(0).Value
-        Else
-            ExecuteSQL = ""
+        ' Create new connection
+        Dim tempConn: Set tempConn = CreateObject("ADODB.Connection")
+        On Error Resume Next
+
+        ' Try primary driver
+        tempConn.Open "Driver={SQLite3 ODBC Driver};Database=" & dbPath & ";"
+        If Err.Number <> 0 Then
+            ' Try alternate driver
+            Err.Clear
+            tempConn.Open "Driver={SQLite ODBC Driver};Database=" & dbPath & ";"
         End If
+
+        If Err.Number <> 0 Then
+            ' Fall back to R wrapper
+            useODBC = False
+            Set tempConn = Nothing
+            ExecuteSQL = ExecuteSQL(sql)  ' Recursive call will use R wrapper
+            Exit Function
+        End If
+        On Error Goto 0
+
+        ' Set timeout and begin transaction
+        tempConn.Execute "PRAGMA busy_timeout=5000;"
+
+        ' Execute query
+        Dim result
+        Dim rs: Set rs = tempConn.Execute(sql)
+        If Not rs.EOF Then
+            result = rs.Fields(0).Value
+        Else
+            result = ""
+        End If
+
+        ' Clean up
+        rs.Close
+        Set rs = Nothing
+        tempConn.Close
+        Set tempConn = Nothing
+
+        ExecuteSQL = result
     Else
         ' Use R wrapper script
         Dim shell: Set shell = CreateObject("WScript.Shell")
@@ -60,14 +98,22 @@ Function ExecuteSQL(sql)
     End If
 End Function
 
-' Initialize database
-InitializeDatabase
+' Function to get current process PID
+Function GetCurrentPID()
+    Dim shell: Set shell = CreateObject("WScript.Shell")
+    Dim exec: Set exec = shell.Exec("cmd /c echo %pid%")
+    GetCurrentPID = CInt(exec.StdOut.ReadAll)
+End Function
 
-' Read configuration
+' Read configuration from database
 Function ReadConfig(key)
     ReadConfig = ExecuteSQL("SELECT value FROM config WHERE key='" & key & "';")
 End Function
 
+' Initialize database access method
+TestDatabaseAccess
+
+' Read configuration
 Dim watchPath: watchPath = ReadConfig("path")
 Dim pattern: pattern = ReadConfig("pattern")
 Dim recursive: recursive = (ReadConfig("recursive") = "true")
@@ -80,9 +126,47 @@ If Len(watchPath) = 0 Then
     WScript.Quit 1
 End If
 
-' Write our PID to database status
-ExecuteSQL "INSERT OR REPLACE INTO status (key, value) VALUES ('pid', '" & _
-          CreateObject("WScript.Shell").Exec("cmd /c echo %pid%").StdOut.ReadAll & "');"
+' Write our PID to active_processes
+Dim currentPid: currentPid = GetCurrentPID()
+ExecuteSQL "INSERT INTO active_processes (pid, type) VALUES (" & currentPid & ", 'watcher');"
+
+' Function to write event to database and launch callback
+Sub WriteEvent(eventType, filePath)
+    ' Only process events matching configured type
+    If changeType <> "any" And changeType <> eventType Then
+        Exit Sub
+    End If
+
+    ' Get timestamp
+    Dim timestamp: timestamp = Year(Now) & "-" & Right("0" & Month(Now), 2) & "-" & _
+                   Right("0" & Day(Now), 2) & " " & Right("0" & Hour(Now), 2) & ":" & _
+                   Right("0" & Minute(Now), 2) & ":" & Right("0" & Second(Now), 2)
+
+    ' Begin transaction
+    Dim sql: sql = "BEGIN TRANSACTION;" & _
+                   "INSERT INTO events (timestamp, event_type, file_path) " & _
+                   "VALUES ('" & timestamp & "', '" & eventType & "', '" & _
+                   Replace(filePath, "'", "''") & "');" & _
+                   "COMMIT;"
+
+    ExecuteSQL sql
+
+    ' Launch callback if configured
+    If Len(callbackScript) > 0 Then
+        Dim eventId: eventId = ExecuteSQL("SELECT last_insert_rowid();")
+        If Len(eventId) > 0 Then
+            ' Launch callback wrapper
+            Dim shell: Set shell = CreateObject("WScript.Shell")
+            shell.Run "cscript //NoLogo callback_wrapper.vbs """ & _
+                     dbPath & """ " & eventId, 0, False
+        End If
+    End If
+
+    ' Exit after first event in single mode
+    If watchMode = "single" Then
+        WScript.Quit 0
+    End If
+End Sub
 
 ' Create FileSystemWatcher
 Dim watcher: Set watcher = CreateObject("System.IO.FileSystemWatcher")
@@ -92,53 +176,6 @@ With watcher
     .IncludeSubdirectories = recursive
     .NotifyFilter = 17 ' LastWrite + FileName + DirectoryName
 End With
-
-' Function to write event to database
-Sub WriteEvent(eventType, filePath)
-    ' Only process events matching configured type
-    If changeType <> "any" And changeType <> eventType Then
-        Exit Sub
-    End If
-
-    ' Insert event
-    Dim timestamp: timestamp = Year(Now) & "-" & Right("0" & Month(Now), 2) & "-" & _
-                   Right("0" & Day(Now), 2) & " " & Right("0" & Hour(Now), 2) & ":" & _
-                   Right("0" & Minute(Now), 2) & ":" & Right("0" & Second(Now), 2)
-
-    Dim sql: sql = "INSERT INTO events (timestamp, event_type, file_path) " & _
-                   "VALUES ('" & timestamp & "', '" & eventType & "', '" & _
-                   Replace(filePath, "'", "''") & "');"
-
-    ExecuteSQL sql
-
-    ' Launch callback if configured
-    If Len(callbackScript) > 0 Then
-        Dim eventId: eventId = ExecuteSQL("SELECT last_insert_rowid();")
-        If Len(eventId) > 0 Then
-            CreateObject("WScript.Shell").Run _
-            "Rscript -e ""library(vigil); vigil:::execute_callback('" & _
-            Replace(dbPath, "'", "''") & "', " & eventId & ")""", 0, False
-        End If
-    End If
-
-    ' Exit after first event in single mode
-    If watchMode = "single" Then
-        cleanup
-        WScript.Quit 0
-    End If
-End Sub
-
-' Cleanup function
-Sub cleanup()
-    On Error Resume Next
-    ExecuteSQL "INSERT OR REPLACE INTO status (key, value) VALUES ('state', 'stopped');"
-    If Not conn Is Nothing Then conn.Close
-End Sub
-
-' Set up cleanup on script termination
-Sub OnTerminate
-    cleanup
-End Sub
 
 ' Event handlers for different file changes
 Sub OnCreated(obj, ev)
@@ -158,9 +195,6 @@ watcher.OnCreated = GetRef("OnCreated")
 watcher.OnChanged = GetRef("OnChanged")
 watcher.OnDeleted = GetRef("OnDeleted")
 
-' Mark watcher as running
-ExecuteSQL "INSERT OR REPLACE INTO status (key, value) VALUES ('state', 'running');"
-
 ' Enable watching
 watcher.EnableRaisingEvents = True
 
@@ -170,7 +204,6 @@ Do While True
 
     ' Check if our parent process is still alive
     If WScript.StdIn.AtEndOfStream Then
-        cleanup
         WScript.Quit 0
     End If
 Loop

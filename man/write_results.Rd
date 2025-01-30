@@ -4,7 +4,7 @@
 \alias{write_results}
 \title{Write captured results to database}
 \usage{
-write_results(con, event_id, handler)
+write_results(db_path, event_id, handler)
 }
 \description{
 Write captured results to database

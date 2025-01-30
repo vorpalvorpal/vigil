@@ -50,7 +50,7 @@ create_capture_handler <- function() {
 
 #' Write captured results to database
 #' @keywords internal
-write_results <- function(con, event_id, handler) {
+write_results <- function(db_path, event_id, handler) {
   # Extract results from handler environment
   results <- handler$output_env
 
@@ -88,6 +88,8 @@ write_results <- function(con, event_id, handler) {
   )
 
   # Update database using named parameters
+  con <- DBI::dbConnect(RSQLite::SQLite(), db_path)
+  on.exit(DBI::dbDisconnect(con))
   DBI::dbExecute(
     con,
     "UPDATE events SET
@@ -150,6 +152,9 @@ execute_callback <- function(db_path, event_id) {
     sprintf("SELECT * FROM events WHERE id = %d", event_id)
   )
 
+  # Close connection before potentially lengthy callback execution
+  DBI::dbDisconnect(con)
+
   # Create output handler
   handler <- create_capture_handler()
 
@@ -165,5 +170,5 @@ execute_callback <- function(db_path, event_id) {
   )
 
   # Write results back to database
-  write_results(con, event_id, handler)
+  write_results(db_path, event_id, handler)
 }

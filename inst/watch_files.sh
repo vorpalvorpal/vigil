@@ -34,10 +34,10 @@ if [ -z "$WATCH_PATH" ]; then
     exit 1
 fi
 
-# Write our PID to database status
-sqlite_exec "INSERT OR REPLACE INTO status (key, value) VALUES ('pid', '$$');"
+# Write our PID as the watcher process
+sqlite_exec "INSERT INTO active_processes (pid, type) VALUES ($$, 'watcher');"
 
-# Function to write event to database
+# Function to write event to database and launch callback
 write_event() {
     local type="$1"
     local file="$2"
@@ -46,7 +46,7 @@ write_event() {
     # Only process events matching configured type
     if [ "$CHANGE_TYPE" != "any" ] && [ "$CHANGE_TYPE" != "$type" ]; then
         return
-    }
+    fi
 
     # Begin transaction
     sqlite_exec "BEGIN TRANSACTION;
@@ -54,11 +54,22 @@ write_event() {
       VALUES ('$timestamp', '$type', '$file');
       COMMIT;"
 
-    # Launch callback runner if configured
+    # Launch callback if configured
     sqlite_exec "SELECT value FROM config WHERE key='callback_script';" | while read -r callback_script; do
         if [ -n "$callback_script" ]; then
             event_id=$(sqlite_exec "SELECT last_insert_rowid();")
-            Rscript -e "library(vigil); vigil:::execute_callback('$DB_PATH', $event_id)" &
+
+            # Launch callback in background subshell with completion trap
+            (
+                trap 'sqlite_exec "INSERT INTO active_processes (pid, type, event_id)
+                                 VALUES ($$, '\''callback'\'', $event_id)
+                                 ON CONFLICT (pid) DO UPDATE SET active = FALSE;"' EXIT
+                Rscript -e "library(vigil); vigil:::execute_callback('$DB_PATH', $event_id)"
+            ) &
+
+            callback_pid=$!
+            sqlite_exec "INSERT INTO active_processes (pid, type, event_id)
+                        VALUES ($callback_pid, 'callback', $event_id);"
         fi
     done
 
@@ -68,10 +79,8 @@ write_event() {
     fi
 }
 
-# Cleanup function
+# Simple cleanup - just exit
 cleanup() {
-    # Mark watcher as stopped in database
-    sqlite_exec "INSERT OR REPLACE INTO status (key, value) VALUES ('state', 'stopped');"
     exit 0
 }
 
@@ -101,9 +110,6 @@ else
     echo "No file watching tool found (requires inotifywait or fswatch)" >&2
     exit 1
 fi
-
-# Mark watcher as running
-sqlite_exec "INSERT OR REPLACE INTO status (key, value) VALUES ('state', 'running');"
 
 # Start watching based on selected tool
 if [ "$WATCH_CMD" = "inotifywait" ]; then
