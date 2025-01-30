@@ -116,8 +116,8 @@ Sub WriteEvent(eventType, filePath)
         Dim eventId: eventId = ExecuteSQL("SELECT last_insert_rowid();")
         If Len(eventId) > 0 Then
             CreateObject("WScript.Shell").Run _
-                "cscript //NoLogo callback_runner.vbs " & dbPath & " " & eventId & " " & _
-                callbackScript, 0, False
+            "Rscript -e ""library(vigil); vigil:::execute_callback('" & _
+            Replace(dbPath, "'", "''") & "', " & eventId & ")""", 0, False
         End If
     End If
 

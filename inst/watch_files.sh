@@ -58,7 +58,7 @@ write_event() {
     sqlite_exec "SELECT value FROM config WHERE key='callback_script';" | while read -r callback_script; do
         if [ -n "$callback_script" ]; then
             event_id=$(sqlite_exec "SELECT last_insert_rowid();")
-            callback_runner.sh "$DB_PATH" "$event_id" "$callback_script" &
+            Rscript -e "library(vigil); vigil:::execute_callback('$DB_PATH', $event_id)" &
         fi
     done
 

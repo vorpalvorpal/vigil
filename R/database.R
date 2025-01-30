@@ -24,15 +24,21 @@ create_watcher_database <- function(config) {
         )")
 
       DBI::dbExecute(con, "
-        CREATE TABLE events (
-          id INTEGER PRIMARY KEY,
-          timestamp TEXT NOT NULL,
-          event_type TEXT NOT NULL,
-          file_path TEXT NOT NULL,
-          callback_output TEXT,
-          callback_timestamp TEXT,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )")
+      CREATE TABLE events (
+        id INTEGER PRIMARY KEY,
+        timestamp TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        callback_source TEXT,
+        callback_text TEXT,
+        callback_messages TEXT,
+        callback_warnings TEXT,
+        callback_errors TEXT,
+        callback_values TEXT,
+        callback_plots TEXT,
+        callback_timestamp TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )")
 
       DBI::dbExecute(con, "
         CREATE TABLE status (

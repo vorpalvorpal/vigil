@@ -25,7 +25,9 @@ Imports:
     sys (>= 3.4.0),
     dplyr (>= 1.1.0),
     DBI (>= 1.1.0),
-    RSQLite (>= 2.2.0)
+    RSQLite (>= 2.2.0),
+    evaluate (>= 0.20),
+    qs (>= 0.25.5)
 Suggests:
     testthat (>= 3.0.0),
     knitr,

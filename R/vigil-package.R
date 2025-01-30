@@ -24,6 +24,8 @@
 #' @importFrom checkmate assert_directory_exists assert_character assert_logical assert_choice assert_number
 #' @importFrom purrr map_dfr walk
 #' @importFrom tibble tibble
+#' @importFrom evaluate evaluate new_output_handler
+#' @importFrom qs qserialize qdeserialize base85_encode base85_decode
 #'
 #' @keywords internal
 "_PACKAGE"
