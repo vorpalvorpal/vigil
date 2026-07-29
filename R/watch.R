@@ -2,13 +2,24 @@
 #'
 #' @param path Directory path to watch
 #' @param file_pattern Optional file pattern to match (regex)
-#' @param recursive Whether to watch subdirectories
 #' @param callback Function or path to R script that will be called on file changes.
 #'   The callback will receive an event list containing:
 #'     - id: Event identifier
 #'     - timestamp: When the event occurred
 #'     - event_type: "created", "modified", or "deleted"
 #'     - file_path: Full path to changed file
+#' @param recursive Whether to watch subdirectories
+#' @param callback_log Types of output to log from execution of callback. One or
+#'    more of the following:
+#'      - "sources": the echoed source code under evaluation
+#'      - "texts": any textual console output
+#'      - "messages": `message()` output
+#'      - "warnings": `warning()` output
+#'      - "errors": `stop()` output
+#'      - "values": visible values returned from evaluation
+#'      - "invisible": invisible values returned from evaluation
+#'      - "plots": graphics, as returned by `recordPlot()`
+#'    Default is everything except "sources" and "invisible"
 #' @param watch_mode The watching mode:
 #'   * "continuous" - Watch until explicitly stopped
 #'   * "single" - Stop after first event
@@ -22,11 +33,11 @@
 #' @export
 watch <- function(path,
                   file_pattern = NULL,
-                  recursive = FALSE,
                   callback = NULL,
+                  recursive = FALSE,
+                  callback_log = c("texts", "messages", "warnings", "errors", "values", "plots"),
                   watch_mode = "continuous",
                   change_type = "any") {
-
   # Check platform requirements
   check_platform_requirements()
   if (watch_mode == "persistent") {
@@ -44,6 +55,7 @@ watch <- function(path,
     )
   }
   checkmate::assert_flag(recursive)
+  checkmate::assert_subset(callback_log, c("sources", "texts", "messages", "warnings", "errors", "values", "invisible", "plots"))
   checkmate::assert_choice(watch_mode, c("single", "continuous", "persistent"))
   checkmate::assert_choice(change_type, c("created", "modified", "deleted", "any"))
 
@@ -62,16 +74,16 @@ watch <- function(path,
 
   # Build descriptive messages
   change_msg <- switch(change_type,
-                       "any" = "all file changes",
-                       "created" = "file creation",
-                       "modified" = "file modification",
-                       "deleted" = "file deletion"
+    "any" = "all file changes",
+    "created" = "file creation",
+    "modified" = "file modification",
+    "deleted" = "file deletion"
   )
 
   duration_msg <- switch(watch_mode,
-                         "single" = "until first event",
-                         "persistent" = "until explicitly stopped",
-                         "continuous" = "until this R session ends"
+    "single" = "until first event",
+    "persistent" = "until explicitly stopped",
+    "continuous" = "until this R session ends"
   )
 
   cli::cli_alert_success(c(

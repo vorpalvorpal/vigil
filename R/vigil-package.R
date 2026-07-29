@@ -29,3 +29,8 @@
 #'
 #' @keywords internal
 "_PACKAGE"
+
+# TODO:
+# - `watch` has a parameter to set which things to log. This needs to be passed down to `create_capture_handler` so that it can decide what to capture.
+#   - The `invisible` option needs to be implemented in `callback_handling.R` (started) and added to database schema.
+

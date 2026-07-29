@@ -9,6 +9,7 @@ create_capture_handler <- function() {
   output_env$warnings <- character()
   output_env$errors <- character()
   output_env$values <- list()
+  output_env$invisible <- list()
   output_env$plots <- list()
 
   handler <- evaluate::new_output_handler(
@@ -35,6 +36,8 @@ create_capture_handler <- function() {
     value = function(x, visible, env = NULL) {
       if (visible) {
         output_env$values <<- c(output_env$values, list(x))
+      } else {
+        output_env$invisible <<- c(output_env$invisible, list(x))
       }
       NULL
     },
